@@ -164,13 +164,50 @@ The capture path is also privacy-first:
 - set `PGCHANGE_FINGERPRINT_KEY` to use HMAC-SHA256 with the same secret on both environments,
 - `--raw-queryid` exists only as an explicit compatibility/debug opt-in.
 
-The capture session also tries to set `pg_stat_statements.track = 'none'` so its own inspection queries do not contaminate the next workload window. If PostgreSQL permissions prevent that, the window is marked uncertain instead of silently treating it as clean.
+The capture session now tries to start the PostgreSQL connection with `pg_stat_statements.track = 'none'` already applied, so even the command that disables tracking cannot contaminate the workload window. If PostgreSQL permissions prevent startup-level disabling, the capture falls back but marks the window uncertain instead of silently treating it as clean.
 
 A cumulative `pg_stat_statements_live` or CSV snapshot can still be inspected, but v0.8 will not let that alone become HIGH evidence. HIGH evidence requires comparable verified windows or an explicit higher-quality measurement source.
 
 CI now includes a real PostgreSQL 17 instance started with `shared_preload_libraries=pg_stat_statements`. The test creates the extension, captures a real start/end window, runs SQL, derives delta counters, verifies pseudonymous fingerprints, verifies that SQL text was not stored, and checks that a valid window can participate in the evidence layer.
 
 This is still not production certification. A valid measurement window proves that the sampled counters are temporally comparable; it does not prove peak concurrency, bind diversity, writes, background jobs, or complete workload coverage.
+
+## v0.9: stable cross-version workload fingerprints
+
+v0.9 removes a major ambiguity in PostgreSQL major-upgrade comparisons. PostgreSQL `queryid` is useful inside one server/version, but it is not treated here as a guaranteed stable identity across major versions.
+
+Live capture now fingerprints each `pg_stat_statements` row from a locally normalized SQL shape instead of from `queryid`:
+
+```
+pg_stat_statements query text
+        ↓
+local canonicalization
+  - comments removed
+  - literals/bind values replaced
+  - whitespace normalized
+  - quoted identifiers preserved
+        ↓
+SHA-256 / HMAC-SHA256
+        ↓
+pseudonymous fingerprint
+        ↓
+raw SQL discarded unless explicitly requested
+```
+
+With the same `PGCHANGE_FINGERPRINT_KEY` on both sides, the same SQL shape can therefore be matched between PostgreSQL 14 and PostgreSQL 17 without persisting raw SQL in the snapshot.
+
+Important limits:
+
+- the normalizer is deliberately conservative, not a full SQL parser,
+- query text is read transiently by the local capture process because it is needed to derive the stable fingerprint,
+- `--include-query-text` is still opt-in,
+- `--raw-queryid` disables cross-version-stable matching,
+- CSV imports only get cross-version-stable fingerprints when the CSV contains a `query` column,
+- a 100% fingerprint match does not prove that bind distributions, peak concurrency, writes, background jobs, or all production traffic were represented.
+
+CI now starts real PostgreSQL 14 and PostgreSQL 17 instances with `pg_stat_statements`, runs the same three-query workload on both, derives measurement windows, and requires the resulting fingerprint sets and call counts to match exactly with 100% observed workload overlap. The test also verifies that query text was not persisted.
+
+If a 14→17 comparison uses legacy `queryid`-based fingerprints, the system now records an explicit cross-version fingerprint unknown and prevents that comparison from becoming clean HIGH evidence.
 
 ## Use real pg_stat_statements evidence
 
@@ -182,7 +219,8 @@ SELECT
   calls,
   total_exec_time,
   mean_exec_time,
-  rows
+  rows,
+  query
 FROM pg_stat_statements
 WHERE calls > 0;
 ```
@@ -194,6 +232,8 @@ pgchangesafe import-pgss baseline.csv --output baseline.json --label pg14 --post
 pgchangesafe import-pgss candidate.csv --output candidate.json --label pg17 --postgres-version 17.6
 pgchangesafe compare baseline.json candidate.json
 ```
+
+For cross-version CSV matching, include the `query` column so v0.9 can derive normalized-SQL fingerprints. The imported JSON still omits query text by default, but the CSV itself contains SQL and must be handled as sensitive data. If the CSV has no `query` column, the importer falls back to `queryid` fingerprints and a major-version comparison remains an explicit fingerprint-stability **UNKNOWN**.
 
 The comparison derives observed workload overlap from shared query fingerprints. Anything that cannot be proven from the snapshots remains explicit **UNKNOWN**.
 
@@ -241,7 +281,7 @@ pgchangesafe window candidate-start.json candidate-end.json \
 pgchangesafe compare baseline-window.json candidate-window.json
 ```
 
-Live capture also records a small set of PostgreSQL settings so comparison can expose configuration drift. Query text is **not captured by default**. The pseudonymous fingerprint must be generated with the same scheme/key on both sides or comparison is rejected.
+Live capture also records a small set of PostgreSQL settings so comparison can expose configuration drift. Query text is read transiently for normalization but is **not persisted by default**. Use the same `PGCHANGE_FINGERPRINT_KEY` on baseline and candidate so the HMAC fingerprints are comparable; snapshots produced with different schemes/keys are rejected.
 
 ## Decision-level coverage
 
@@ -329,7 +369,8 @@ The system should prefer an explicit `UNKNOWN` over a false causal story.
 
 ## Privacy
 
-- Query text is excluded from live captures by default.
+- Query text is read transiently by v0.9 live capture to derive a stable normalized-SQL fingerprint, but it is excluded from persisted snapshots by default.
+- Prefer setting `PGCHANGE_FINGERPRINT_KEY` so fingerprints use HMAC rather than an unkeyed hash.
 - Do not post production SQL, credentials, customer data, or sensitive logs in public issues.
 - Prefer test/staging replicas for upgrade experiments.
 

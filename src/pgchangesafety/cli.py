@@ -137,9 +137,17 @@ def main() -> None:
     import_cmd.add_argument("--label", default="snapshot")
     import_cmd.add_argument("--postgres-version")
     import_cmd.add_argument(
+        "--include-query-text",
+        action="store_true",
+        help="Persist query text from the CSV. Off by default for privacy.",
+    )
+    import_cmd.add_argument(
         "--raw-queryid",
         action="store_true",
-        help="Store raw queryid fingerprints instead of pseudonymous hashes.",
+        help=(
+            "Use raw queryid fingerprints. This disables stable "
+            "cross-version SQL fingerprinting."
+        ),
     )
 
     capture_cmd = sub.add_parser(
@@ -156,12 +164,15 @@ def main() -> None:
     capture_cmd.add_argument(
         "--include-query-text",
         action="store_true",
-        help="Include normalized query text. Off by default for privacy.",
+        help="Persist query text. Off by default for privacy.",
     )
     capture_cmd.add_argument(
         "--raw-queryid",
         action="store_true",
-        help="Store raw queryid fingerprints instead of pseudonymous hashes.",
+        help=(
+            "Use raw queryid fingerprints. This disables stable "
+            "cross-version SQL fingerprinting."
+        ),
     )
 
     window_cmd = sub.add_parser(
@@ -219,6 +230,7 @@ def main() -> None:
             postgres_version=args.postgres_version,
             fingerprint_key=os.getenv("PGCHANGE_FINGERPRINT_KEY"),
             raw_queryid=args.raw_queryid,
+            include_query_text=args.include_query_text,
         )
         _write_json(args.output, snapshot)
         print(f"Wrote {len(snapshot['queries'])} query fingerprints to {args.output}")
