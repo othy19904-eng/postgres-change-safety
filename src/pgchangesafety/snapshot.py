@@ -673,13 +673,14 @@ def build_assessment_payload(
                 candidate,
             )
         ),
-        "measurement_window_valid": (
-            comparable_window
-        ),
         "additional_unknowns": (
             additional_unknowns
         ),
     }
+    if comparable_window is not None:
+        derived_coverage[
+            "measurement_window_valid"
+        ] = comparable_window
 
     if coverage:
         derived_coverage.update(coverage)
