@@ -105,6 +105,37 @@ The CI workflow also avoids duplicate branch-push runs: feature branches are tes
 
 This is a stability gate, not a production-safety claim. The workloads are still controlled and intentionally small; real customer traces and broader failure mechanisms remain future validation work.
 
+## v0.7: workload-level safety gate
+
+v0.7 moves the benchmark from isolated query cases to a **multi-query workload** and adds an explicit defense against false clearance.
+
+The PostgreSQL-backed workload contains five fingerprints:
+
+- a hash-join query with a planted planner regression,
+- an indexed lookup with a planted schema/index regression,
+- a stable point read,
+- a stable aggregate,
+- a stable write measured with rollback.
+
+The complete workload changes two factors at once (`enable_hashjoin` and lookup-index presence). Each regressed query gets both a positive causal experiment and a negative control for the unrelated factor. The engine must therefore identify the correct cause while leaving the stable workload untouched.
+
+A second adversarial case deliberately **omits the known-regressed hash-join fingerprint from the candidate snapshot** while supplying optimistic metadata that claims 100% workload coverage. v0.7 now derives fingerprint overlap from the actual baseline/candidate snapshots and caps declared workload coverage by that observed overlap. In the benchmark, the missing 30% of baseline call volume forces the observed overlap to 70%, creates an explicit coverage unknown, and prevents a clean HIGH-evidence result.
+
+The benchmark evaluator still does not turn the product into a GO/NO-GO authority. Instead it defines a test-only **false-clearance** event as the dangerous combination of:
+
+```
+no detected regression
++ HIGH evidence
++ no known unknowns
++ no unresolved confounders
+```
+
+When the hidden-regression oracle says the case must not clear, CI fails if that combination appears.
+
+The new workload suite runs in **three fresh PostgreSQL 17 CI trials** in addition to the existing PostgreSQL 14/17 regression suite and Python unit tests.
+
+The timing measurements are real PostgreSQL execution. Some non-timing coverage fields in the benchmark are intentionally scenario inputs used to test decision-coverage logic; they are not claims that the harness itself reproduced production concurrency, bind distributions, or background jobs.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
