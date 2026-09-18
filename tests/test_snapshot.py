@@ -83,12 +83,14 @@ def test_environment_diffs_capture_version_and_settings():
 def test_explicit_coverage_can_raise_strength_when_cause_isolated():
     baseline = {
         "postgres_version": "14",
+        "fingerprint_cross_version_stable": True,
         "queries": [
             {"fingerprint": "queryid:1", "calls": 100, "mean_ms": 10},
         ],
     }
     candidate = {
         "postgres_version": "17",
+        "fingerprint_cross_version_stable": True,
         "queries": [
             {"fingerprint": "queryid:1", "calls": 100, "mean_ms": 20},
         ],
