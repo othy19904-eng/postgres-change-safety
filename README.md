@@ -81,6 +81,30 @@ CI fails if the planted slowdown is too weak, if regression detection is wrong, 
 
 This is materially stronger than the synthetic suite because the timings come from real PostgreSQL execution. The first attempted planted factor (`work_mem`) was rejected after CI showed that the low-memory run was actually faster on that workload; the benchmark was changed rather than forcing the expected result. It is still not proof of production safety: the workload is deterministic and intentionally small, and we do **not** yet claim a real version-only PostgreSQL regression.
 
+## v0.6: multi-mechanism stability gate
+
+v0.6 makes the real PostgreSQL benchmark harder in two ways.
+
+First, it tests **two distinct planted regression mechanisms** instead of one:
+
+1. **Planner-method regression** — disable hash joins for a large equality join.
+2. **Schema regression** — remove an index used by a selective lookup.
+
+Both plants are verified twice: the benchmark checks that the expected PostgreSQL plan shape actually changed, and it checks that the measured slowdown clears a minimum effect threshold before the oracle is allowed to expect a regression.
+
+Second, GitHub Actions now runs the entire real benchmark in **three independent matrix trials**, each with fresh PostgreSQL 14 and PostgreSQL 17 service containers. Each trial must pass all four real cases:
+
+- hash-join regression → correct cause,
+- index-removal regression → correct cause,
+- version + config confounder → `UNKNOWN`,
+- stable negative control → no invented regression.
+
+That means a pull request must currently survive **12 real database-backed case evaluations across 3 fresh CI trials**, in addition to the synthetic blind suite and unit tests.
+
+The CI workflow also avoids duplicate branch-push runs: feature branches are tested through pull requests, while direct push testing is reserved for `main`.
+
+This is a stability gate, not a production-safety claim. The workloads are still controlled and intentionally small; real customer traces and broader failure mechanisms remain future validation work.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
