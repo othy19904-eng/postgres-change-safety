@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .benchmark import render_benchmark, run_blind_benchmark, strict_pass
 from .engine import assess
 from .snapshot import (
     build_assessment_payload,
@@ -21,7 +22,10 @@ def _load_json(path: Path | None) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _render_text(result: dict[str, Any]) -> str:
@@ -156,6 +160,23 @@ def main() -> None:
     compare_cmd.add_argument("--format", choices=["text", "json"], default="text")
     compare_cmd.add_argument("--output", type=Path)
 
+    benchmark_cmd = sub.add_parser(
+        "benchmark",
+        help="Run a blind planted-regression benchmark suite",
+    )
+    benchmark_cmd.add_argument(
+        "suite",
+        type=Path,
+        nargs="?",
+        default=Path("benchmarks/blind_cases.json"),
+    )
+    benchmark_cmd.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero unless every blind case passes with zero false causal attributions.",
+    )
+    benchmark_cmd.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "assess":
@@ -196,6 +217,16 @@ def main() -> None:
             thresholds=_load_json(args.thresholds),
         )
         _emit(assess(payload).to_dict(), args.format, args.output)
+        return
+
+    if args.command == "benchmark":
+        report = run_blind_benchmark(args.suite)
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(render_benchmark(report))
+        if args.strict and not strict_pass(report):
+            raise SystemExit(1)
         return
 
 
