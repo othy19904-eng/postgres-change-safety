@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "postgres-change-safety"
+version = "0.1.0"
+description = "Evidence-driven PostgreSQL change verification with causal isolation and explicit decision coverage."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "PostgreSQL Change Safety contributors"}]
+keywords = ["postgresql", "regression", "database", "upgrade", "verification"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.scripts]
+pgchangesafe = "pgchangesafety.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
