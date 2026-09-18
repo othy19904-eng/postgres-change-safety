@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from math import log, sqrt
 from statistics import mean
 from typing import Any
 
@@ -31,6 +32,7 @@ class Assessment:
     evidence_strength: str
     evidence_score: float
     causal_resolution_rate: float
+    observed_workload_overlap_pct: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,11 +44,33 @@ class Assessment:
             "evidence_strength": self.evidence_strength,
             "evidence_score": self.evidence_score,
             "causal_resolution_rate": self.causal_resolution_rate,
+            "observed_workload_overlap_pct": self.observed_workload_overlap_pct,
         }
 
 
 def _query_map(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(q["fingerprint"]): q for q in snapshot.get("queries", [])}
+
+
+def _observed_workload_overlap(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> float | None:
+    before = _query_map(baseline)
+    after = _query_map(candidate)
+    total_calls = sum(
+        max(float(q.get("calls", 0.0)), 0.0)
+        for q in before.values()
+    )
+    if total_calls <= 0:
+        return None
+
+    shared_calls = sum(
+        max(float(q.get("calls", 0.0)), 0.0)
+        for fingerprint, q in before.items()
+        if fingerprint in after
+    )
+    return round(shared_calls / total_calls * 100.0, 2)
 
 
 def _severity(ratio: float, workload_share_pct: float) -> str:
@@ -74,15 +98,38 @@ def _trial_support(
     if baseline_ms <= 0 or candidate_ms <= 0 or changed <= 0 or restored <= 0:
         return None
 
-    reproduce_error = abs(changed - candidate_ms) / max(candidate_ms, 1e-9)
-    restore_error = abs(restored - baseline_ms) / max(baseline_ms, 1e-9)
-    slowdown = changed / baseline_ms
+    expected_effect = candidate_ms / baseline_ms
+    trial_effect = changed / restored
 
-    support = 1.0 - (
-        0.55 * min(reproduce_error, 1.0)
-        + 0.45 * min(restore_error, 1.0)
+    # Compare causal effect sizes rather than demanding identical absolute
+    # timings. CI runners and real staging systems can shift in overall speed
+    # between the baseline/candidate window and a later controlled trial.
+    # A paired changed/restored ratio preserves the intervention signal.
+    if expected_effect <= 1.0 or trial_effect <= 1.0:
+        effect_match = 0.0
+    else:
+        expected_log = log(expected_effect)
+        trial_log = log(trial_effect)
+        ratio = min(expected_log, trial_log) / max(
+            expected_log,
+            trial_log,
+            1e-9,
+        )
+        # Square-root keeps materially similar large effects comparable while
+        # still penalizing a tiny effect that cannot explain a large one.
+        effect_match = sqrt(max(0.0, min(ratio, 1.0)))
+
+    restore_error = abs(restored - baseline_ms) / max(
+        baseline_ms,
+        1e-9,
     )
-    if slowdown < 1.15:
+    restore_similarity = 1.0 - min(restore_error, 1.0)
+
+    support = (
+        0.75 * effect_match
+        + 0.25 * restore_similarity
+    )
+    if trial_effect < 1.15:
         support *= 0.35
 
     return max(0.0, min(support, 1.0))
@@ -286,8 +333,10 @@ def _coverage(coverage: dict[str, Any]) -> tuple[float, list[str], bool]:
 
 
 def assess(payload: dict[str, Any]) -> Assessment:
-    baseline = _query_map(payload.get("baseline", {}))
-    candidate = _query_map(payload.get("candidate", {}))
+    baseline_snapshot = payload.get("baseline", {})
+    candidate_snapshot = payload.get("candidate", {})
+    baseline = _query_map(baseline_snapshot)
+    candidate = _query_map(candidate_snapshot)
     experiments = payload.get("experiments", [])
     environment_diffs = payload.get("environment_diffs", [])
     thresholds = payload.get("thresholds", {})
@@ -339,7 +388,28 @@ def assess(payload: dict[str, Any]) -> Assessment:
             )
         )
 
-    coverage_score, unknowns, critical_unknown = _coverage(payload.get("coverage", {}))
+    observed_overlap = _observed_workload_overlap(
+        baseline_snapshot,
+        candidate_snapshot,
+    )
+    coverage_input = dict(payload.get("coverage") or {})
+    declared_workload = _number(coverage_input.get("workload_volume_pct"))
+
+    # A caller may know that its replay sampled less than the shared
+    # fingerprints imply, so a lower declared value is allowed. A higher
+    # declaration cannot override evidence that baseline fingerprints are
+    # absent from the candidate. This prevents a clean-looking assessment
+    # from hiding missing workload behind optimistic metadata.
+    if observed_overlap is not None:
+        if declared_workload is None:
+            coverage_input["workload_volume_pct"] = observed_overlap
+        else:
+            coverage_input["workload_volume_pct"] = min(
+                declared_workload,
+                observed_overlap,
+            )
+
+    coverage_score, unknowns, critical_unknown = _coverage(coverage_input)
 
     unresolved_global = sorted(
         {
@@ -388,4 +458,5 @@ def assess(payload: dict[str, Any]) -> Assessment:
         evidence_strength=strength,
         evidence_score=round(evidence_score, 1),
         causal_resolution_rate=round(causal_rate, 3),
+        observed_workload_overlap_pct=observed_overlap,
     )
