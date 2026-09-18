@@ -277,6 +277,17 @@ def _coverage(coverage: dict[str, Any]) -> tuple[float, list[str], bool]:
     writes = _truth(coverage.get("write_workload_covered"))
     concurrency = _truth(coverage.get("peak_concurrency_covered"))
     jobs = _truth(coverage.get("background_jobs_covered"))
+    window_present = "measurement_window_valid" in coverage
+    window_valid = (
+        _truth(coverage.get("measurement_window_valid"))
+        if window_present
+        else None
+    )
+    additional_unknowns = [
+        str(item)
+        for item in (coverage.get("additional_unknowns") or [])
+        if str(item).strip()
+    ]
 
     score = (
         (workload or 0.0) * 0.34
@@ -325,6 +336,15 @@ def _coverage(coverage: dict[str, Any]) -> tuple[float, list[str], bool]:
     elif env < 90:
         unknowns.append(f"Environment match is only {env:.1f}%")
 
+    if window_present and window_valid is not True:
+        unknowns.append(
+            "Comparable pg_stat_statements measurement windows are not verified"
+        )
+
+    for item in additional_unknowns:
+        if item not in unknowns:
+            unknowns.append(item)
+
     critical_unknown = (
         writes is not True
         or concurrency is not True
@@ -332,6 +352,8 @@ def _coverage(coverage: dict[str, Any]) -> tuple[float, list[str], bool]:
         or workload < 80
         or env is None
         or env < 80
+        or (window_present and window_valid is not True)
+        or bool(additional_unknowns)
     )
     return round(score, 1), unknowns, critical_unknown
 
