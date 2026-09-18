@@ -31,39 +31,198 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def canonicalize_sql(sql: str) -> str:
+    """Return a conservative, literal-insensitive SQL token stream.
+
+    This is intentionally not a full SQL parser. Its job is narrower:
+    make the same PostgreSQL statement stable across whitespace,
+    comments, bind placeholders, and literal values before hashing.
+    Quoted identifiers are preserved because their case can be
+    semantically significant.
+    """
+    tokens: list[str] = []
+    i = 0
+    n = len(sql)
+
+    while i < n:
+        ch = sql[i]
+
+        if ch.isspace():
+            i += 1
+            continue
+
+        if sql.startswith("--", i):
+            end = sql.find("\n", i + 2)
+            i = n if end < 0 else end + 1
+            continue
+
+        if sql.startswith("/*", i):
+            depth = 1
+            i += 2
+            while i < n and depth:
+                if sql.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif sql.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+
+        if ch == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            tokens.append("?")
+            continue
+
+        if ch == "$":
+            if i + 1 < n and sql[i + 1].isdigit():
+                i += 2
+                while i < n and sql[i].isdigit():
+                    i += 1
+                tokens.append("?")
+                continue
+
+            tag_end = i + 1
+            while (
+                tag_end < n
+                and (
+                    sql[tag_end].isalnum()
+                    or sql[tag_end] == "_"
+                )
+            ):
+                tag_end += 1
+            if tag_end < n and sql[tag_end] == "$":
+                tag = sql[i : tag_end + 1]
+                end = sql.find(tag, tag_end + 1)
+                if end >= 0:
+                    i = end + len(tag)
+                    tokens.append("?")
+                    continue
+
+        if ch == '"':
+            start = i
+            i += 1
+            while i < n:
+                if sql[i] == '"':
+                    if i + 1 < n and sql[i + 1] == '"':
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            tokens.append(sql[start:i])
+            continue
+
+        if ch.isdigit() or (
+            ch == "."
+            and i + 1 < n
+            and sql[i + 1].isdigit()
+        ):
+            i += 1
+            while i < n and (
+                sql[i].isalnum()
+                or sql[i] in ".+-_"
+            ):
+                i += 1
+            tokens.append("?")
+            continue
+
+        if ch.isalpha() or ch == "_":
+            start = i
+            i += 1
+            while i < n and (
+                sql[i].isalnum()
+                or sql[i] in "_$"
+            ):
+                i += 1
+            tokens.append(sql[start:i].lower())
+            continue
+
+        if ch in "~!@#%^&*+-=|<>/?:":
+            start = i
+            i += 1
+            while i < n and sql[i] in "~!@#%^&*+-=|<>/?:":
+                i += 1
+            tokens.append(sql[start:i])
+            continue
+
+        tokens.append(ch)
+        i += 1
+
+    return " ".join(tokens)
+
+
 def _fingerprint_metadata(
     key: str | None,
     *,
     raw_queryid: bool,
-) -> dict[str, str]:
+    stable_sql: bool,
+) -> dict[str, Any]:
     if raw_queryid:
         return {
             "fingerprint_scheme": "raw-queryid-v1",
             "fingerprint_key_id": "none",
+            "fingerprint_basis": "queryid",
+            "fingerprint_cross_version_stable": False,
         }
+
+    basis = "normalized-sql" if stable_sql else "queryid"
     if key:
-        return {
-            "fingerprint_scheme": "hmac-sha256-queryid-v1",
-            "fingerprint_key_id": hashlib.sha256(
-                key.encode("utf-8")
-            ).hexdigest()[:12],
-        }
+        scheme = f"hmac-sha256-{basis}-v1"
+        key_id = hashlib.sha256(
+            key.encode("utf-8")
+        ).hexdigest()[:12]
+    else:
+        scheme = f"sha256-{basis}-v1"
+        key_id = "unkeyed"
+
     return {
-        "fingerprint_scheme": "sha256-queryid-v1",
-        "fingerprint_key_id": "unkeyed",
+        "fingerprint_scheme": scheme,
+        "fingerprint_key_id": key_id,
+        "fingerprint_basis": (
+            "normalized_sql"
+            if stable_sql
+            else "queryid"
+        ),
+        "fingerprint_cross_version_stable": stable_sql,
     }
 
 
 def _fingerprint(
     queryid: str,
     *,
+    query: str | None,
     key: str | None,
     raw_queryid: bool,
+    stable_sql: bool,
 ) -> str:
     if raw_queryid:
         return f"queryid:{queryid}"
 
-    data = queryid.encode("utf-8")
+    if stable_sql:
+        if not query:
+            raise ValueError(
+                "Stable SQL fingerprinting requires query text "
+                "during capture/import"
+            )
+        material = canonicalize_sql(query)
+        if not material:
+            raise ValueError(
+                "Cannot fingerprint an empty normalized SQL statement"
+            )
+    else:
+        material = queryid
+
+    data = material.encode("utf-8")
     if key:
         digest = hmac.new(
             key.encode("utf-8"),
@@ -81,6 +240,8 @@ def _normalize_pgss_row(
     *,
     fingerprint_key: str | None = None,
     raw_queryid: bool = False,
+    stable_sql: bool = False,
+    store_query_text: bool = True,
 ) -> dict[str, Any]:
     queryid = str(row.get("queryid", "")).strip()
     if not queryid:
@@ -99,8 +260,14 @@ def _normalize_pgss_row(
     normalized: dict[str, Any] = {
         "fingerprint": _fingerprint(
             queryid,
+            query=(
+                str(row.get("query"))
+                if row.get("query")
+                else None
+            ),
             key=fingerprint_key,
             raw_queryid=raw_queryid,
+            stable_sql=stable_sql,
         ),
         "calls": calls,
         "total_exec_time": total_ms,
@@ -108,7 +275,7 @@ def _normalize_pgss_row(
         "rows": _to_float(row.get("rows")),
     }
 
-    if row.get("query"):
+    if store_query_text and row.get("query"):
         normalized["query"] = str(row["query"])
 
     return normalized
@@ -151,6 +318,7 @@ def import_pgss_csv(
     postgres_version: str | None = None,
     fingerprint_key: str | None = None,
     raw_queryid: bool = False,
+    include_query_text: bool = False,
 ) -> dict[str, Any]:
     with path.open(
         "r",
@@ -166,11 +334,17 @@ def import_pgss_csv(
                 "required column(s): "
                 + ", ".join(sorted(missing))
             )
+        stable_sql = (
+            not raw_queryid
+            and "query" in fields
+        )
         rows = [
             _normalize_pgss_row(
                 row,
                 fingerprint_key=fingerprint_key,
                 raw_queryid=raw_queryid,
+                stable_sql=stable_sql,
+                store_query_text=include_query_text,
             )
             for row in reader
         ]
@@ -183,6 +357,7 @@ def import_pgss_csv(
         **_fingerprint_metadata(
             fingerprint_key,
             raw_queryid=raw_queryid,
+            stable_sql=stable_sql,
         ),
         "queries": rows,
     }
@@ -205,9 +380,10 @@ def capture_live(
             'pip install -e ".[postgres]"'
         ) from exc
 
+    stable_sql = not raw_queryid
     query_column = (
         ", query"
-        if include_query_text
+        if stable_sql or include_query_text
         else ""
     )
     sql = f"""
@@ -253,6 +429,8 @@ def capture_live(
                     dict(zip(names, values)),
                     fingerprint_key=fingerprint_key,
                     raw_queryid=raw_queryid,
+                    stable_sql=stable_sql,
+                    store_query_text=include_query_text,
                 )
                 for values in cur.fetchall()
             ]
@@ -298,6 +476,7 @@ def capture_live(
         **_fingerprint_metadata(
             fingerprint_key,
             raw_queryid=raw_queryid,
+            stable_sql=stable_sql,
         ),
         "settings": settings,
         "queries": rows,
@@ -464,6 +643,12 @@ def derive_window_snapshot(
         ),
         "fingerprint_key_id": end.get(
             "fingerprint_key_id"
+        ),
+        "fingerprint_basis": end.get(
+            "fingerprint_basis"
+        ),
+        "fingerprint_cross_version_stable": end.get(
+            "fingerprint_cross_version_stable"
         ),
         "settings": end.get("settings") or {},
         "measurement_window_valid": valid,
@@ -654,6 +839,28 @@ def build_assessment_payload(
     ) + list(
         candidate.get("window_unknowns") or []
     )
+
+    baseline_version = baseline.get("postgres_version")
+    candidate_version = candidate.get("postgres_version")
+    versions_differ = (
+        baseline_version not in (None, "")
+        and candidate_version not in (None, "")
+        and str(baseline_version) != str(candidate_version)
+    )
+    if versions_differ:
+        stable_across_versions = (
+            baseline.get(
+                "fingerprint_cross_version_stable"
+            ) is True
+            and candidate.get(
+                "fingerprint_cross_version_stable"
+            ) is True
+        )
+        if not stable_across_versions:
+            additional_unknowns.append(
+                "Cross-version fingerprint stability is not "
+                "verified for this PostgreSQL comparison"
+            )
 
     derived_coverage: dict[str, Any] = {
         "workload_volume_pct": (
