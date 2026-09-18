@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from pgchangesafety.engine import assess
-from pgchangesafety.snapshot import build_assessment_payload, import_pgss_csv
+from pgchangesafety.snapshot import (
+    build_assessment_payload,
+    derive_environment_diffs,
+    import_pgss_csv,
+)
 
 
 def test_import_pgss_csv(tmp_path: Path):
@@ -12,6 +16,7 @@ def test_import_pgss_csv(tmp_path: Path):
         encoding="utf-8",
     )
     snapshot = import_pgss_csv(csv_file, label="pg14")
+
     assert snapshot["label"] == "pg14"
     assert snapshot["queries"][0]["fingerprint"] == "queryid:101"
     assert snapshot["queries"][0]["mean_ms"] == 15.0
@@ -29,7 +34,9 @@ def test_build_payload_derives_overlap_but_keeps_other_unknowns():
             {"fingerprint": "queryid:1", "calls": 75, "mean_ms": 20},
         ]
     }
+
     payload = build_assessment_payload(baseline, candidate)
+
     assert payload["coverage"]["workload_volume_pct"] == 80.0
     assert payload["coverage"]["peak_concurrency_covered"] is None
 
@@ -41,16 +48,44 @@ def test_build_payload_derives_overlap_but_keeps_other_unknowns():
     assert "Peak-concurrency coverage is unknown" in result.known_unknowns
 
 
-def test_explicit_coverage_can_raise_strength_when_cause_isolated():
+def test_environment_diffs_capture_version_and_settings():
     baseline = {
-        "queries": [
-            {"fingerprint": "queryid:1", "calls": 100, "mean_ms": 10},
-        ]
+        "postgres_version": "14.20",
+        "settings": {
+            "random_page_cost": "4",
+            "work_mem": "4096",
+        },
+        "queries": [],
     }
     candidate = {
+        "postgres_version": "17.6",
+        "settings": {
+            "random_page_cost": "1.1",
+            "work_mem": "4096",
+        },
+        "queries": [],
+    }
+
+    diffs = derive_environment_diffs(baseline, candidate)
+    factors = {item["factor"] for item in diffs}
+
+    assert "postgres.version" in factors
+    assert "config.random_page_cost" in factors
+    assert "config.work_mem" not in factors
+
+
+def test_explicit_coverage_can_raise_strength_when_cause_isolated():
+    baseline = {
+        "postgres_version": "14",
+        "queries": [
+            {"fingerprint": "queryid:1", "calls": 100, "mean_ms": 10},
+        ],
+    }
+    candidate = {
+        "postgres_version": "17",
         "queries": [
             {"fingerprint": "queryid:1", "calls": 100, "mean_ms": 20},
-        ]
+        ],
     }
     coverage = {
         "bind_value_diversity_pct": 95,
@@ -67,8 +102,16 @@ def test_explicit_coverage_can_raise_strength_when_cause_isolated():
             "controlled": True,
             "changed_ms": 20,
             "restored_ms": 10,
-        }
+        },
+        {
+            "fingerprint": "queryid:1",
+            "factor": "postgres.version",
+            "controlled": True,
+            "changed_ms": 20.2,
+            "restored_ms": 10.1,
+        },
     ]
+
     payload = build_assessment_payload(
         baseline,
         candidate,
@@ -76,5 +119,6 @@ def test_explicit_coverage_can_raise_strength_when_cause_isolated():
         experiments=experiments,
     )
     result = assess(payload)
+
     assert result.regressions[0].cause == "postgres.version"
     assert result.evidence_strength == "HIGH"
