@@ -8,10 +8,14 @@ from pathlib import Path
 import psycopg
 
 
+FINGERPRINT = "real:large-equality-join"
+
 QUERY = """
 EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF)
-SELECT array_length(array_agg(id ORDER BY payload), 1)
-FROM bench_sort
+SELECT count(*)
+FROM bench_left AS l
+JOIN bench_right AS r
+  ON r.k = l.k
 """
 
 
@@ -21,38 +25,46 @@ def connect(dsn: str):
 
 def setup(conn) -> None:
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS bench_sort")
+        cur.execute("DROP TABLE IF EXISTS bench_left")
+        cur.execute("DROP TABLE IF EXISTS bench_right")
         cur.execute("""
-            CREATE TABLE bench_sort (
-                id bigint PRIMARY KEY,
+            CREATE TABLE bench_left (
+                k bigint NOT NULL,
                 payload text NOT NULL
             )
         """)
         cur.execute("""
-            INSERT INTO bench_sort (id, payload)
+            CREATE TABLE bench_right (
+                k bigint NOT NULL,
+                payload text NOT NULL
+            )
+        """)
+        cur.execute("""
+            INSERT INTO bench_left (k, payload)
             SELECT
                 g,
-                md5(g::text) || md5((g * 17)::text) ||
-                md5((g * 97)::text) || md5((g * 193)::text)
-            FROM generate_series(1, 180000) AS g
+                md5(g::text) || md5((g * 17)::text)
+            FROM generate_series(1, 250000) AS g
         """)
-        cur.execute("ANALYZE bench_sort")
+        cur.execute("""
+            INSERT INTO bench_right (k, payload)
+            SELECT
+                g,
+                md5((g * 97)::text) || md5((g * 193)::text)
+            FROM generate_series(1, 250000) AS g
+        """)
+        cur.execute("ANALYZE bench_left")
+        cur.execute("ANALYZE bench_right")
 
 
-def set_work_mem(conn, value: str) -> None:
+def set_hashjoin(conn, enabled: bool) -> None:
     with conn.cursor() as cur:
-        cur.execute(f"SET work_mem = '{value}'")
+        cur.execute("SET enable_hashjoin = %s", ("on" if enabled else "off",))
 
 
 def server_version(conn) -> str:
     with conn.cursor() as cur:
         cur.execute("SHOW server_version")
-        return str(cur.fetchone()[0])
-
-
-def work_mem(conn) -> str:
-    with conn.cursor() as cur:
-        cur.execute("SHOW work_mem")
         return str(cur.fetchone()[0])
 
 
@@ -88,7 +100,7 @@ def snapshot(version: str, mean_ms: float, calls: int = 100) -> dict:
         "postgres_version": version,
         "queries": [
             {
-                "fingerprint": "real:ordered-array-aggregate",
+                "fingerprint": FINGERPRINT,
                 "calls": calls,
                 "mean_ms": mean_ms,
             }
@@ -96,33 +108,30 @@ def snapshot(version: str, mean_ms: float, calls: int = 100) -> dict:
     }
 
 
-def repeated_work_mem_experiments(conn, candidate_ms: float, baseline_ms: float) -> list[dict]:
+def repeated_hashjoin_experiments(conn) -> list[dict]:
     experiments = []
     for _ in range(2):
-        set_work_mem(conn, "64kB")
+        set_hashjoin(conn, False)
         changed = median_ms(conn, rounds=3, warmups=0)
-        set_work_mem(conn, "128MB")
+        set_hashjoin(conn, True)
         restored = median_ms(conn, rounds=3, warmups=0)
         experiments.append(
             {
-                "fingerprint": "real:ordered-array-aggregate",
-                "factor": "config.work_mem",
+                "fingerprint": FINGERPRINT,
+                "factor": "config.enable_hashjoin",
                 "controlled": True,
                 "changed_ms": changed,
                 "restored_ms": restored,
             }
         )
 
-    # Sanity check: the experiments themselves should broadly reproduce
-    # the measured candidate/baseline relationship.
     changed_med = statistics.median(x["changed_ms"] for x in experiments)
     restored_med = statistics.median(x["restored_ms"] for x in experiments)
     if changed_med <= restored_med * 1.20:
         raise RuntimeError(
-            "Planted work_mem regression was too weak in repeated trials: "
+            "Planted enable_hashjoin regression was too weak in repeated trials: "
             f"changed={changed_med:.3f}ms restored={restored_med:.3f}ms"
         )
-
     return experiments
 
 
@@ -140,55 +149,53 @@ def main() -> None:
         v14 = server_version(pg14)
         v17 = server_version(pg17)
 
-        # Real causal case: same PostgreSQL version, one planted config change.
-        set_work_mem(pg17, "128MB")
+        # Case 1: same PostgreSQL version. Only hash join availability changes.
+        set_hashjoin(pg17, True)
         baseline17 = median_ms(pg17)
 
-        set_work_mem(pg17, "64kB")
+        set_hashjoin(pg17, False)
         candidate17 = median_ms(pg17)
 
         if candidate17 < baseline17 * 1.25 or (candidate17 - baseline17) < 5:
             raise RuntimeError(
-                "Real PostgreSQL work_mem regression did not clear the engine threshold: "
+                "Real PostgreSQL enable_hashjoin regression did not clear the "
+                "engine threshold: "
                 f"baseline={baseline17:.3f}ms candidate={candidate17:.3f}ms"
             )
 
-        experiments = repeated_work_mem_experiments(
-            pg17,
-            candidate_ms=candidate17,
-            baseline_ms=baseline17,
-        )
+        experiments = repeated_hashjoin_experiments(pg17)
 
         config_case = {
-            "id": "real-work-mem-regression",
+            "id": "real-enable-hashjoin-regression",
             "payload": {
                 "baseline": snapshot(v17, baseline17),
                 "candidate": snapshot(v17, candidate17),
-                "coverage": coverage(100),
+                "coverage": coverage(95),
                 "environment_diffs": [
                     {
-                        "factor": "config.work_mem",
+                        "factor": "config.enable_hashjoin",
                         "kind": "setting",
-                        "baseline": "128MB",
-                        "candidate": "64kB",
+                        "baseline": "on",
+                        "candidate": "off",
                     }
                 ],
                 "experiments": experiments,
                 "thresholds": {"regression_ratio": 1.25, "min_delta_ms": 5},
             },
             "oracle": {
-                "fingerprint": "real:ordered-array-aggregate",
+                "fingerprint": FINGERPRINT,
                 "regression": True,
-                "cause": "config.work_mem",
+                "cause": "config.enable_hashjoin",
             },
         }
 
-        # Real confounder case: version and work_mem both changed.
-        # We only isolate work_mem, so version remains unresolved by design.
-        set_work_mem(pg14, "128MB")
+        # Case 2: both version and config change. We isolate hashjoin only.
+        # Because the version is not independently tested, the correct causal
+        # output is UNKNOWN even if the slowdown is real.
+        set_hashjoin(pg14, True)
         baseline14 = median_ms(pg14)
 
-        set_work_mem(pg17, "64kB")
+        set_hashjoin(pg17, False)
         candidate17_for_version = median_ms(pg17)
 
         if (
@@ -197,7 +204,8 @@ def main() -> None:
         ):
             raise RuntimeError(
                 "Version+config real case did not produce a measurable regression: "
-                f"pg14={baseline14:.3f}ms pg17-low-work-mem={candidate17_for_version:.3f}ms"
+                f"pg14={baseline14:.3f}ms "
+                f"pg17-hashjoin-off={candidate17_for_version:.3f}ms"
             )
 
         confounded_case = {
@@ -214,24 +222,24 @@ def main() -> None:
                         "candidate": v17,
                     },
                     {
-                        "factor": "config.work_mem",
+                        "factor": "config.enable_hashjoin",
                         "kind": "setting",
-                        "baseline": "128MB",
-                        "candidate": "64kB",
+                        "baseline": "on",
+                        "candidate": "off",
                     },
                 ],
                 "experiments": experiments,
                 "thresholds": {"regression_ratio": 1.25, "min_delta_ms": 5},
             },
             "oracle": {
-                "fingerprint": "real:ordered-array-aggregate",
+                "fingerprint": FINGERPRINT,
                 "regression": True,
                 "cause": "UNKNOWN",
             },
         }
 
-        # Real negative case: same server/config measured twice.
-        set_work_mem(pg17, "128MB")
+        # Case 3: same server and same config measured twice.
+        set_hashjoin(pg17, True)
         stable_a = median_ms(pg17)
         stable_b = median_ms(pg17)
 
@@ -246,7 +254,7 @@ def main() -> None:
                 "thresholds": {"regression_ratio": 1.35, "min_delta_ms": 10},
             },
             "oracle": {
-                "fingerprint": "real:ordered-array-aggregate",
+                "fingerprint": FINGERPRINT,
                 "regression": False,
             },
         }
@@ -256,9 +264,9 @@ def main() -> None:
             "metadata": {
                 "pg14_version": v14,
                 "pg17_version": v17,
-                "baseline17_ms": baseline17,
-                "candidate17_low_work_mem_ms": candidate17,
-                "baseline14_ms": baseline14,
+                "baseline17_hashjoin_on_ms": baseline17,
+                "candidate17_hashjoin_off_ms": candidate17,
+                "baseline14_hashjoin_on_ms": baseline14,
                 "candidate17_confounded_ms": candidate17_for_version,
                 "stable_control_a_ms": stable_a,
                 "stable_control_b_ms": stable_b,
