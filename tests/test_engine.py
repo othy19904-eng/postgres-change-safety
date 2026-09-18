@@ -3,8 +3,16 @@ from pgchangesafety.engine import assess
 
 def base_payload():
     return {
-        "baseline": {"queries": [{"fingerprint": "q1", "calls": 1000, "p95_ms": 10.0}]},
-        "candidate": {"queries": [{"fingerprint": "q1", "calls": 1000, "p95_ms": 20.0}]},
+        "baseline": {
+            "queries": [
+                {"fingerprint": "q1", "calls": 1000, "p95_ms": 10.0}
+            ]
+        },
+        "candidate": {
+            "queries": [
+                {"fingerprint": "q1", "calls": 1000, "p95_ms": 20.0}
+            ]
+        },
         "coverage": {
             "workload_volume_pct": 98,
             "bind_value_diversity_pct": 90,
@@ -18,44 +26,131 @@ def base_payload():
     }
 
 
-def test_probable_cause_isolated():
-    payload = base_payload()
-    payload["experiments"] = [
+def repeated_version_trials():
+    return [
         {
             "fingerprint": "q1",
             "factor": "postgres.version",
             "controlled": True,
             "changed_ms": 19.8,
             "restored_ms": 10.2,
-        }
+        },
+        {
+            "fingerprint": "q1",
+            "factor": "postgres.version",
+            "controlled": True,
+            "changed_ms": 20.2,
+            "restored_ms": 9.9,
+        },
     ]
+
+
+def test_probable_cause_requires_repeated_evidence():
+    payload = base_payload()
+    payload["experiments"] = repeated_version_trials()
+
     result = assess(payload)
+
     assert len(result.regressions) == 1
     assert result.regressions[0].cause == "postgres.version"
     assert result.regressions[0].cause_status == "PROBABLE_CAUSE"
+    assert result.regressions[0].supporting_trials == 2
     assert result.evidence_strength == "HIGH"
+
+
+def test_single_trial_stays_unknown():
+    payload = base_payload()
+    payload["experiments"] = repeated_version_trials()[:1]
+
+    result = assess(payload)
+
+    assert result.regressions[0].cause == "UNKNOWN"
+    assert result.regressions[0].cause_status == "UNKNOWN"
 
 
 def test_unknown_when_causality_not_isolated():
     payload = base_payload()
     payload["experiments"] = []
+
     result = assess(payload)
+
     assert result.regressions[0].cause == "UNKNOWN"
     assert result.regressions[0].cause_status == "UNKNOWN"
 
 
-def test_critical_unknown_caps_strength():
+def test_unresolved_environment_confounder_blocks_probable_cause():
     payload = base_payload()
-    payload["experiments"] = [
+    payload["environment_diffs"] = [
+        {
+            "factor": "postgres.version",
+            "kind": "postgres_version",
+            "baseline": "14",
+            "candidate": "17",
+        },
+        {
+            "factor": "config.random_page_cost",
+            "kind": "setting",
+            "baseline": "4",
+            "candidate": "1.1",
+        },
+    ]
+    payload["experiments"] = repeated_version_trials()
+
+    result = assess(payload)
+
+    regression = result.regressions[0]
+    assert regression.cause == "UNKNOWN"
+    assert "config.random_page_cost" in regression.unresolved_confounders
+    assert result.evidence_strength != "HIGH"
+
+
+def test_tested_negative_confounder_allows_probable_cause():
+    payload = base_payload()
+    payload["environment_diffs"] = [
+        {
+            "factor": "postgres.version",
+            "kind": "postgres_version",
+            "baseline": "14",
+            "candidate": "17",
+        },
+        {
+            "factor": "config.random_page_cost",
+            "kind": "setting",
+            "baseline": "4",
+            "candidate": "1.1",
+        },
+    ]
+    payload["experiments"] = repeated_version_trials() + [
         {
             "fingerprint": "q1",
-            "factor": "postgres.version",
+            "factor": "config.random_page_cost",
             "controlled": True,
-            "changed_ms": 20.0,
-            "restored_ms": 10.0,
-        }
+            "changed_ms": 11.0,
+            "restored_ms": 10.4,
+        },
+        {
+            "fingerprint": "q1",
+            "factor": "config.random_page_cost",
+            "controlled": True,
+            "changed_ms": 10.8,
+            "restored_ms": 10.1,
+        },
     ]
-    payload["coverage"]["peak_concurrency_covered"] = False
+
     result = assess(payload)
+
+    regression = result.regressions[0]
+    assert regression.cause == "postgres.version"
+    assert regression.cause_status == "PROBABLE_CAUSE"
+    assert regression.unresolved_confounders == []
+
+
+def test_critical_unknown_caps_strength():
+    payload = base_payload()
+    payload["experiments"] = repeated_version_trials()
+    payload["coverage"]["peak_concurrency_covered"] = False
+
+    result = assess(payload)
+
     assert "Peak concurrency is not covered" in result.known_unknowns
     assert result.evidence_strength != "HIGH"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from statistics import mean
 from typing import Any
 
 
@@ -16,6 +17,8 @@ class Regression:
     cause: str
     cause_confidence: float
     cause_status: str
+    supporting_trials: int
+    unresolved_confounders: list[str]
 
 
 @dataclass
@@ -23,6 +26,8 @@ class Assessment:
     regressions: list[Regression]
     decision_coverage_score: float
     known_unknowns: list[str]
+    environment_diffs: list[dict[str, Any]]
+    unresolved_confounders: list[str]
     evidence_strength: str
     evidence_score: float
     causal_resolution_rate: float
@@ -32,6 +37,8 @@ class Assessment:
             "regressions": [asdict(r) for r in self.regressions],
             "decision_coverage_score": self.decision_coverage_score,
             "known_unknowns": self.known_unknowns,
+            "environment_diffs": self.environment_diffs,
+            "unresolved_confounders": self.unresolved_confounders,
             "evidence_strength": self.evidence_strength,
             "evidence_score": self.evidence_score,
             "causal_resolution_rate": self.causal_resolution_rate,
@@ -54,48 +61,139 @@ def _severity(ratio: float, workload_share_pct: float) -> str:
     return "LOW"
 
 
+def _trial_support(
+    baseline_ms: float,
+    candidate_ms: float,
+    exp: dict[str, Any],
+) -> float | None:
+    if not exp.get("controlled", False):
+        return None
+
+    changed = float(exp.get("changed_ms", 0.0))
+    restored = float(exp.get("restored_ms", 0.0))
+    if baseline_ms <= 0 or candidate_ms <= 0 or changed <= 0 or restored <= 0:
+        return None
+
+    reproduce_error = abs(changed - candidate_ms) / max(candidate_ms, 1e-9)
+    restore_error = abs(restored - baseline_ms) / max(baseline_ms, 1e-9)
+    slowdown = changed / baseline_ms
+
+    support = 1.0 - (
+        0.55 * min(reproduce_error, 1.0)
+        + 0.45 * min(restore_error, 1.0)
+    )
+    if slowdown < 1.15:
+        support *= 0.35
+
+    return max(0.0, min(support, 1.0))
+
+
+def _group_experiments(
+    fingerprint: str,
+    baseline_ms: float,
+    candidate_ms: float,
+    experiments: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for exp in experiments:
+        if str(exp.get("fingerprint")) != fingerprint:
+            continue
+
+        support = _trial_support(baseline_ms, candidate_ms, exp)
+        if support is None:
+            continue
+
+        factor = str(exp.get("factor", "unknown"))
+        replicates = max(int(exp.get("replicates", 1)), 1)
+        bucket = grouped.setdefault(
+            factor,
+            {"supports": [], "effective_trials": 0},
+        )
+        bucket["supports"].append(support)
+        bucket["effective_trials"] += replicates
+
+    for bucket in grouped.values():
+        supports = bucket["supports"]
+        bucket["score"] = mean(supports)
+        bucket["spread"] = max(supports) - min(supports) if len(supports) > 1 else 0.0
+        bucket["repeated"] = (
+            len(supports) >= 2 or int(bucket["effective_trials"]) >= 3
+        )
+
+    return grouped
+
+
 def _causal_attribution(
     fingerprint: str,
     baseline_ms: float,
     candidate_ms: float,
     experiments: list[dict[str, Any]],
-) -> tuple[str, float, str]:
-    matches: list[tuple[str, float]] = []
-    for exp in experiments:
-        if str(exp.get("fingerprint")) != fingerprint or not exp.get("controlled", False):
-            continue
+    environment_diffs: list[dict[str, Any]],
+) -> tuple[str, float, str, int, list[str]]:
+    grouped = _group_experiments(
+        fingerprint,
+        baseline_ms,
+        candidate_ms,
+        experiments,
+    )
 
-        changed = float(exp.get("changed_ms", 0.0))
-        restored = float(exp.get("restored_ms", 0.0))
-        if baseline_ms <= 0 or candidate_ms <= 0 or changed <= 0 or restored <= 0:
-            continue
+    changed_factors = {
+        str(item.get("factor"))
+        for item in environment_diffs
+        if item.get("factor")
+    }
 
-        reproduce_error = abs(changed - candidate_ms) / max(candidate_ms, 1e-9)
-        restore_error = abs(restored - baseline_ms) / max(baseline_ms, 1e-9)
-        slowdown = changed / baseline_ms
+    reliably_tested = {
+        factor
+        for factor, data in grouped.items()
+        if data.get("repeated", False)
+    }
+    unresolved = sorted(changed_factors - reliably_tested)
 
-        support = 1.0 - (
-            0.55 * min(reproduce_error, 1.0)
-            + 0.45 * min(restore_error, 1.0)
+    if not grouped:
+        return "UNKNOWN", 0.0, "UNKNOWN", 0, unresolved
+
+    ranked = sorted(
+        grouped.items(),
+        key=lambda item: float(item[1].get("score", 0.0)),
+        reverse=True,
+    )
+    top_factor, top_data = ranked[0]
+    top_score = float(top_data.get("score", 0.0))
+    second_score = (
+        float(ranked[1][1].get("score", 0.0))
+        if len(ranked) > 1
+        else 0.0
+    )
+    trials = int(top_data.get("effective_trials", 0))
+    repeated = bool(top_data.get("repeated", False))
+    stable = float(top_data.get("spread", 1.0)) <= 0.18
+
+    unresolved_other = [factor for factor in unresolved if factor != top_factor]
+
+    if (
+        repeated
+        and stable
+        and top_score >= 0.80
+        and (top_score - second_score) >= 0.12
+        and not unresolved_other
+    ):
+        return (
+            top_factor,
+            round(top_score, 3),
+            "PROBABLE_CAUSE",
+            trials,
+            [],
         )
-        if slowdown < 1.15:
-            support *= 0.35
 
-        matches.append(
-            (str(exp.get("factor", "unknown")), max(0.0, min(support, 1.0)))
-        )
-
-    if not matches:
-        return "UNKNOWN", 0.0, "UNKNOWN"
-
-    matches.sort(key=lambda item: item[1], reverse=True)
-    top_factor, top_score = matches[0]
-    second_score = matches[1][1] if len(matches) > 1 else 0.0
-
-    if top_score >= 0.78 and (top_score - second_score) >= 0.12:
-        return top_factor, round(top_score, 3), "PROBABLE_CAUSE"
-
-    return "UNKNOWN", round(top_score, 3), "UNKNOWN"
+    return (
+        "UNKNOWN",
+        round(top_score, 3),
+        "UNKNOWN",
+        trials,
+        unresolved_other or unresolved,
+    )
 
 
 def _number(value: Any) -> float | None:
@@ -191,6 +289,7 @@ def assess(payload: dict[str, Any]) -> Assessment:
     baseline = _query_map(payload.get("baseline", {}))
     candidate = _query_map(payload.get("candidate", {}))
     experiments = payload.get("experiments", [])
+    environment_diffs = payload.get("environment_diffs", [])
     thresholds = payload.get("thresholds", {})
     ratio_threshold = float(thresholds.get("regression_ratio", 1.25))
     min_delta_ms = float(thresholds.get("min_delta_ms", 5.0))
@@ -215,8 +314,12 @@ def assess(payload: dict[str, Any]) -> Assessment:
         calls = max(float(before.get("calls", 0.0)), 0.0)
         workload_share = (calls / total_calls * 100.0) if total_calls > 0 else 0.0
 
-        cause, confidence, status = _causal_attribution(
-            fingerprint, b, c, experiments
+        cause, confidence, status, trials, unresolved = _causal_attribution(
+            fingerprint,
+            b,
+            c,
+            experiments,
+            environment_diffs,
         )
 
         regressions.append(
@@ -231,10 +334,20 @@ def assess(payload: dict[str, Any]) -> Assessment:
                 cause=cause,
                 cause_confidence=confidence,
                 cause_status=status,
+                supporting_trials=trials,
+                unresolved_confounders=unresolved,
             )
         )
 
     coverage_score, unknowns, critical_unknown = _coverage(payload.get("coverage", {}))
+
+    unresolved_global = sorted(
+        {
+            confounder
+            for regression in regressions
+            for confounder in regression.unresolved_confounders
+        }
+    )
 
     if regressions:
         resolved = sum(1 for r in regressions if r.cause_status == "PROBABLE_CAUSE")
@@ -244,7 +357,7 @@ def assess(payload: dict[str, Any]) -> Assessment:
 
     evidence_score = coverage_score * 0.72 + (causal_rate * 100.0) * 0.28
 
-    if critical_unknown:
+    if critical_unknown or unresolved_global:
         evidence_score = min(evidence_score, 69.0)
     if unknowns:
         evidence_score = min(evidence_score, 84.0)
@@ -270,6 +383,8 @@ def assess(payload: dict[str, Any]) -> Assessment:
         regressions=regressions,
         decision_coverage_score=coverage_score,
         known_unknowns=unknowns,
+        environment_diffs=environment_diffs,
+        unresolved_confounders=unresolved_global,
         evidence_strength=strength,
         evidence_score=round(evidence_score, 1),
         causal_resolution_rate=round(causal_rate, 3),

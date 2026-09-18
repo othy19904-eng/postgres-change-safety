@@ -38,6 +38,17 @@ def _render_text(result: dict[str, Any]) -> str:
     )
     lines.append("")
 
+    diffs = result.get("environment_diffs", [])
+    lines.append("Environment / configuration diffs:")
+    if diffs:
+        for item in diffs:
+            lines.append(
+                f"- {item['factor']}: {item.get('baseline')} -> {item.get('candidate')}"
+            )
+    else:
+        lines.append("- none observed in captured fields")
+
+    lines.append("")
     regs = result["regressions"]
     if not regs:
         lines.append("Regressions detected: none above configured threshold")
@@ -49,8 +60,14 @@ def _render_text(result: dict[str, Any]) -> str:
                 f"- {r['fingerprint']}: {r['baseline_ms']}ms -> "
                 f"{r['candidate_ms']}ms ({r['ratio']}x), "
                 f"workload={r['workload_share_pct']}%, severity={r['severity']}, "
-                f"cause={cause}, confidence={r['cause_confidence']}"
+                f"cause={cause}, confidence={r['cause_confidence']}, "
+                f"trials={r['supporting_trials']}"
             )
+            if r.get("unresolved_confounders"):
+                lines.append(
+                    "  unresolved confounders: "
+                    + ", ".join(r["unresolved_confounders"])
+                )
 
     lines.append("")
     lines.append("Known unknowns:")
@@ -59,6 +76,14 @@ def _render_text(result: dict[str, Any]) -> str:
             lines.append(f"- {item}")
     else:
         lines.append("- none declared by the supplied coverage data")
+
+    lines.append("")
+    lines.append("Unresolved confounders:")
+    if result.get("unresolved_confounders"):
+        for item in result["unresolved_confounders"]:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- none among captured environment diffs")
 
     return "\n".join(lines)
 

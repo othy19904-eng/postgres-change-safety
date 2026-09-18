@@ -1,0 +1,18 @@
+{
+  "experiments": [
+    {
+      "fingerprint": "queryid:101",
+      "factor": "postgres.version",
+      "controlled": true,
+      "changed_ms": 20.1,
+      "restored_ms": 10.2
+    },
+    {
+      "fingerprint": "queryid:101",
+      "factor": "postgres.version",
+      "controlled": true,
+      "changed_ms": 19.8,
+      "restored_ms": 9.9
+    }
+  ]
+}
