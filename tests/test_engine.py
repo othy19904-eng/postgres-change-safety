@@ -154,3 +154,26 @@ def test_critical_unknown_caps_strength():
 
     assert "Peak concurrency is not covered" in result.known_unknowns
     assert result.evidence_strength != "HIGH"
+
+
+def test_observed_overlap_caps_optimistic_declared_coverage():
+    payload = base_payload()
+    payload["baseline"]["queries"] = [
+        {"fingerprint": "hidden", "calls": 30, "p95_ms": 10.0},
+        {"fingerprint": "stable", "calls": 70, "p95_ms": 10.0},
+    ]
+    payload["candidate"]["queries"] = [
+        {"fingerprint": "stable", "calls": 70, "p95_ms": 10.0},
+    ]
+    payload["coverage"]["workload_volume_pct"] = 100
+    payload["coverage"]["bind_value_diversity_pct"] = 100
+    payload["coverage"]["environment_match_pct"] = 100
+
+    result = assess(payload)
+
+    assert result.observed_workload_overlap_pct == 70.0
+    assert result.evidence_strength != "HIGH"
+    assert any(
+        "70.0% of observed workload volume" in item
+        for item in result.known_unknowns
+    )
