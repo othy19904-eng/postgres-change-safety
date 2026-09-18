@@ -31,6 +31,7 @@ class Assessment:
     evidence_strength: str
     evidence_score: float
     causal_resolution_rate: float
+    observed_workload_overlap_pct: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,11 +43,33 @@ class Assessment:
             "evidence_strength": self.evidence_strength,
             "evidence_score": self.evidence_score,
             "causal_resolution_rate": self.causal_resolution_rate,
+            "observed_workload_overlap_pct": self.observed_workload_overlap_pct,
         }
 
 
 def _query_map(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(q["fingerprint"]): q for q in snapshot.get("queries", [])}
+
+
+def _observed_workload_overlap(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> float | None:
+    before = _query_map(baseline)
+    after = _query_map(candidate)
+    total_calls = sum(
+        max(float(q.get("calls", 0.0)), 0.0)
+        for q in before.values()
+    )
+    if total_calls <= 0:
+        return None
+
+    shared_calls = sum(
+        max(float(q.get("calls", 0.0)), 0.0)
+        for fingerprint, q in before.items()
+        if fingerprint in after
+    )
+    return round(shared_calls / total_calls * 100.0, 2)
 
 
 def _severity(ratio: float, workload_share_pct: float) -> str:
@@ -286,8 +309,10 @@ def _coverage(coverage: dict[str, Any]) -> tuple[float, list[str], bool]:
 
 
 def assess(payload: dict[str, Any]) -> Assessment:
-    baseline = _query_map(payload.get("baseline", {}))
-    candidate = _query_map(payload.get("candidate", {}))
+    baseline_snapshot = payload.get("baseline", {})
+    candidate_snapshot = payload.get("candidate", {})
+    baseline = _query_map(baseline_snapshot)
+    candidate = _query_map(candidate_snapshot)
     experiments = payload.get("experiments", [])
     environment_diffs = payload.get("environment_diffs", [])
     thresholds = payload.get("thresholds", {})
@@ -339,7 +364,28 @@ def assess(payload: dict[str, Any]) -> Assessment:
             )
         )
 
-    coverage_score, unknowns, critical_unknown = _coverage(payload.get("coverage", {}))
+    observed_overlap = _observed_workload_overlap(
+        baseline_snapshot,
+        candidate_snapshot,
+    )
+    coverage_input = dict(payload.get("coverage") or {})
+    declared_workload = _number(coverage_input.get("workload_volume_pct"))
+
+    # A caller may know that its replay sampled less than the shared
+    # fingerprints imply, so a lower declared value is allowed. A higher
+    # declaration cannot override evidence that baseline fingerprints are
+    # absent from the candidate. This prevents a clean-looking assessment
+    # from hiding missing workload behind optimistic metadata.
+    if observed_overlap is not None:
+        if declared_workload is None:
+            coverage_input["workload_volume_pct"] = observed_overlap
+        else:
+            coverage_input["workload_volume_pct"] = min(
+                declared_workload,
+                observed_overlap,
+            )
+
+    coverage_score, unknowns, critical_unknown = _coverage(coverage_input)
 
     unresolved_global = sorted(
         {
@@ -388,4 +434,5 @@ def assess(payload: dict[str, Any]) -> Assessment:
         evidence_strength=strength,
         evidence_score=round(evidence_score, 1),
         causal_resolution_rate=round(causal_rate, 3),
+        observed_workload_overlap_pct=observed_overlap,
     )
