@@ -38,6 +38,10 @@ def configure_session(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("SET jit = off")
         cur.execute("SET max_parallel_workers_per_gather = 0")
+        # Hold merge joins off on both baseline and candidate so the planted
+        # hashjoin change has one clear fallback: nested loop. Because this is
+        # constant on both sides, it is not a changed causal factor.
+        cur.execute("SET enable_mergejoin = off")
 
 
 def setup(conn) -> None:
@@ -70,14 +74,14 @@ def setup(conn) -> None:
             SELECT
                 g,
                 md5(g::text) || md5((g * 17)::text)
-            FROM generate_series(1, 250000) AS g
+            FROM generate_series(1, 4000) AS g
         """)
         cur.execute("""
             INSERT INTO bench_right (k, payload)
             SELECT
                 g,
                 md5((g * 97)::text) || md5((g * 193)::text)
-            FROM generate_series(1, 250000) AS g
+            FROM generate_series(1, 4000) AS g
         """)
         cur.execute("""
             INSERT INTO bench_lookup (k, payload)
@@ -309,6 +313,12 @@ def main() -> None:
             HASH_QUERY,
             {"Hash Join"},
             "hashjoin candidate",
+        )
+        assert_plan_contains(
+            pg17,
+            HASH_QUERY,
+            {"Nested Loop"},
+            "hashjoin-disabled candidate",
         )
         candidate17_hash = median_ms(pg17, HASH_QUERY)
         assert_effect(
