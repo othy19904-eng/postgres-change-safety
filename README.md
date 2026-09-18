@@ -136,6 +136,42 @@ The new workload suite runs in **three fresh PostgreSQL 17 CI trials** in additi
 
 The timing measurements are real PostgreSQL execution. Some non-timing coverage fields in the benchmark are intentionally scenario inputs used to test decision-coverage logic; they are not claims that the harness itself reproduced production concurrency, bind distributions, or background jobs.
 
+## v0.8: real pg_stat_statements measurement windows
+
+v0.8 makes the real-workload path stricter. A raw `pg_stat_statements` snapshot is cumulative, so two captures can look comparable even when they represent very different observation periods. v0.8 therefore adds explicit **measurement windows**:
+
+```
+capture start
+    ↓
+run the real workload window
+    ↓
+capture end
+    ↓
+subtract pg_stat_statements counters
+    ↓
+window snapshot
+    ↓
+compare baseline window vs candidate window
+```
+
+The window contains only counter deltas observed between the two captures. It records total calls and execution time for that interval and rejects a window if `pg_stat_statements` was reset during measurement.
+
+The capture path is also privacy-first:
+
+- query text is still excluded by default,
+- raw `queryid` is no longer the default fingerprint,
+- fingerprints are pseudonymous SHA-256 values,
+- set `PGCHANGE_FINGERPRINT_KEY` to use HMAC-SHA256 with the same secret on both environments,
+- `--raw-queryid` exists only as an explicit compatibility/debug opt-in.
+
+The capture session also tries to set `pg_stat_statements.track = 'none'` so its own inspection queries do not contaminate the next workload window. If PostgreSQL permissions prevent that, the window is marked uncertain instead of silently treating it as clean.
+
+A cumulative `pg_stat_statements_live` or CSV snapshot can still be inspected, but v0.8 will not let that alone become HIGH evidence. HIGH evidence requires comparable verified windows or an explicit higher-quality measurement source.
+
+CI now includes a real PostgreSQL 17 instance started with `shared_preload_libraries=pg_stat_statements`. The test creates the extension, captures a real start/end window, runs SQL, derives delta counters, verifies pseudonymous fingerprints, verifies that SQL text was not stored, and checks that a valid window can participate in the evidence layer.
+
+This is still not production certification. A valid measurement window proves that the sampled counters are temporally comparable; it does not prove peak concurrency, bind diversity, writes, background jobs, or complete workload coverage.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
@@ -169,22 +205,43 @@ Install the optional connector:
 pip install -e ".[postgres]"
 ```
 
-Use an environment variable so credentials do not need to be written into shell history:
+Use environment variables so credentials and the optional fingerprint secret do not need to be written into shell history:
 
 ```bash
 export PGCHANGE_DSN='postgresql://user:password@host/dbname'
-pgchangesafe capture --output baseline.json --label pg14
+export PGCHANGE_FINGERPRINT_KEY='same-secret-for-both-sides'
 ```
 
-Repeat against the candidate test environment:
+Capture the start of the baseline observation window:
+
+```bash
+pgchangesafe capture --output baseline-start.json --label baseline-start
+```
+
+Run the real baseline workload for the period you want to measure, then capture the end and derive the delta-only window:
+
+```bash
+pgchangesafe capture --output baseline-end.json --label baseline-end
+pgchangesafe window baseline-start.json baseline-end.json \
+  --output baseline-window.json --label baseline
+```
+
+Repeat the same process against the candidate environment using the **same** `PGCHANGE_FINGERPRINT_KEY`:
 
 ```bash
 export PGCHANGE_DSN='postgresql://user:password@candidate-host/dbname'
-pgchangesafe capture --output candidate.json --label pg17
-pgchangesafe compare baseline.json candidate.json
+
+pgchangesafe capture --output candidate-start.json --label candidate-start
+# run the comparable candidate workload window
+pgchangesafe capture --output candidate-end.json --label candidate-end
+
+pgchangesafe window candidate-start.json candidate-end.json \
+  --output candidate-window.json --label candidate
+
+pgchangesafe compare baseline-window.json candidate-window.json
 ```
 
-Live capture also records a small set of PostgreSQL settings so the comparison can expose configuration drift. Query text is **not captured by default**.
+Live capture also records a small set of PostgreSQL settings so comparison can expose configuration drift. Query text is **not captured by default**. The pseudonymous fingerprint must be generated with the same scheme/key on both sides or comparison is rejected.
 
 ## Decision-level coverage
 
@@ -268,7 +325,7 @@ The system should prefer an explicit `UNKNOWN` over a false causal story.
 
 ## Measurement-window warning
 
-`pg_stat_statements` is cumulative. Baseline and candidate snapshots are most useful when they represent comparable windows. For serious testing, reset stats or use equivalent observation windows before collecting both sides.
+`pg_stat_statements` is cumulative. Prefer the v0.8 `capture → window` flow so comparison uses counter deltas from explicit start/end boundaries. If a reset occurs inside a window, the command rejects that window. If reset metadata or capture self-tracking cleanliness cannot be verified, the uncertainty is reported and evidence is capped rather than silently treated as complete.
 
 ## Privacy
 
