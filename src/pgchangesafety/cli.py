@@ -37,6 +37,11 @@ def _render_text(result: dict[str, Any]) -> str:
         f"({result['evidence_score']}/100)"
     )
     lines.append(f"Decision coverage: {result['decision_coverage_score']}/100")
+    overlap = result.get("observed_workload_overlap_pct")
+    lines.append(
+        "Observed workload overlap: "
+        + ("unknown" if overlap is None else f"{overlap}%")
+    )
     lines.append(
         f"Causal resolution rate: {result['causal_resolution_rate'] * 100:.1f}%"
     )
@@ -173,7 +178,7 @@ def main() -> None:
     benchmark_cmd.add_argument(
         "--strict",
         action="store_true",
-        help="Exit non-zero unless every blind case passes with zero false causal attributions.",
+        help="Exit non-zero unless every blind case passes with zero false causal attributions or false-clearance events.",
     )
     benchmark_cmd.add_argument("--json", action="store_true")
 
