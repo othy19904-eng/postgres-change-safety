@@ -165,6 +165,47 @@ def _derive_environment_match(
     return round(same / len(common) * 100.0, 2)
 
 
+def derive_environment_diffs(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> list[dict[str, Any]]:
+    diffs: list[dict[str, Any]] = []
+
+    before_version = baseline.get("postgres_version")
+    after_version = candidate.get("postgres_version")
+    if (
+        before_version not in (None, "")
+        and after_version not in (None, "")
+        and str(before_version) != str(after_version)
+    ):
+        diffs.append(
+            {
+                "factor": "postgres.version",
+                "kind": "postgres_version",
+                "baseline": str(before_version),
+                "candidate": str(after_version),
+            }
+        )
+
+    before_settings = baseline.get("settings") or {}
+    after_settings = candidate.get("settings") or {}
+    for key in sorted(set(before_settings) | set(after_settings)):
+        before = before_settings.get(key)
+        after = after_settings.get(key)
+        if str(before) == str(after):
+            continue
+        diffs.append(
+            {
+                "factor": f"config.{key}",
+                "kind": "setting",
+                "baseline": before,
+                "candidate": after,
+            }
+        )
+
+    return diffs
+
+
 def build_assessment_payload(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
@@ -195,6 +236,7 @@ def build_assessment_payload(
         "baseline": baseline,
         "candidate": candidate,
         "coverage": derived_coverage,
+        "environment_diffs": derive_environment_diffs(baseline, candidate),
         "experiments": experiment_rows,
         "thresholds": thresholds or {},
     }
