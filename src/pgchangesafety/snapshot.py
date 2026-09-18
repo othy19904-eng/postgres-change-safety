@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .plan import compare_plan_variants
+
 
 _REQUIRED = {"queryid", "calls"}
 _SETTINGS = [
@@ -873,6 +875,14 @@ def build_assessment_payload(
                 "verified for this PostgreSQL comparison"
             )
 
+    plan_variant_diffs, plan_unknowns = compare_plan_variants(
+        baseline,
+        candidate,
+    )
+    for item in plan_unknowns:
+        if item not in additional_unknowns:
+            additional_unknowns.append(item)
+
     derived_coverage: dict[str, Any] = {
         "workload_volume_pct": (
             _derive_workload_overlap(
@@ -924,5 +934,6 @@ def build_assessment_payload(
             )
         ),
         "experiments": experiment_rows,
+        "plan_variant_diffs": plan_variant_diffs,
         "thresholds": thresholds or {},
     }
