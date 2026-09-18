@@ -3,6 +3,7 @@ from pathlib import Path
 from pgchangesafety.engine import assess
 from pgchangesafety.snapshot import (
     build_assessment_payload,
+    canonicalize_sql,
     derive_environment_diffs,
     derive_window_snapshot,
     import_pgss_csv,
@@ -334,4 +335,138 @@ def test_window_marks_capture_self_tracking_as_unknown():
     assert any(
         "Capture-session queries may be present" in item
         for item in window["window_unknowns"]
+    )
+
+
+
+def test_sql_canonicalization_ignores_literals_comments_and_spacing():
+    first = """
+        SELECT /* checkout */ total
+        FROM orders
+        WHERE customer_id = 123
+          AND status = 'paid'
+    """
+    second = """
+        select total from orders
+        where customer_id=$1 and status=$2 -- same shape
+    """
+
+    assert canonicalize_sql(first) == canonicalize_sql(second)
+
+
+def test_sql_canonicalization_preserves_quoted_identifier_case():
+    upper = 'SELECT "CustomerID" FROM orders WHERE id = 1'
+    lower = 'SELECT "customerid" FROM orders WHERE id = 2'
+
+    assert canonicalize_sql(upper) != canonicalize_sql(lower)
+
+
+def test_csv_with_query_uses_cross_version_stable_fingerprint(tmp_path: Path):
+    csv_file = tmp_path / "pgss.csv"
+    csv_file.write_text(
+        "queryid,calls,total_exec_time,mean_exec_time,rows,query\n"
+        '101,10,150,15,20,"SELECT total FROM orders WHERE id = 7"\n',
+        encoding="utf-8",
+    )
+
+    snapshot = import_pgss_csv(
+        csv_file,
+        fingerprint_key="same-secret",
+    )
+
+    assert (
+        snapshot["fingerprint_scheme"]
+        == "hmac-sha256-normalized-sql-v1"
+    )
+    assert snapshot["fingerprint_cross_version_stable"] is True
+    assert "query" not in snapshot["queries"][0]
+
+
+def test_same_sql_shape_matches_across_different_queryids(tmp_path: Path):
+    pg14 = tmp_path / "pg14.csv"
+    pg17 = tmp_path / "pg17.csv"
+
+    pg14.write_text(
+        "queryid,calls,total_exec_time,mean_exec_time,rows,query\n"
+        '111,10,100,10,10,"SELECT total FROM orders WHERE id = 7"\n',
+        encoding="utf-8",
+    )
+    pg17.write_text(
+        "queryid,calls,total_exec_time,mean_exec_time,rows,query\n"
+        '999999,10,120,12,10,"select total from orders where id=$1"\n',
+        encoding="utf-8",
+    )
+
+    baseline = import_pgss_csv(
+        pg14,
+        postgres_version="14.20",
+        fingerprint_key="cross-version-key",
+    )
+    candidate = import_pgss_csv(
+        pg17,
+        postgres_version="17.6",
+        fingerprint_key="cross-version-key",
+    )
+
+    assert (
+        baseline["queries"][0]["fingerprint"]
+        == candidate["queries"][0]["fingerprint"]
+    )
+    payload = build_assessment_payload(
+        baseline,
+        candidate,
+    )
+    assert not any(
+        "Cross-version fingerprint stability" in item
+        for item in payload["coverage"]["additional_unknowns"]
+    )
+
+
+def test_queryid_based_cross_version_comparison_is_explicit_unknown():
+    baseline = {
+        "postgres_version": "14.20",
+        "fingerprint_scheme": "sha256-queryid-v1",
+        "fingerprint_key_id": "unkeyed",
+        "fingerprint_cross_version_stable": False,
+        "queries": [
+            {
+                "fingerprint": "pgss:same-looking-id-hash",
+                "calls": 100,
+                "mean_ms": 10,
+            }
+        ],
+    }
+    candidate = {
+        "postgres_version": "17.6",
+        "fingerprint_scheme": "sha256-queryid-v1",
+        "fingerprint_key_id": "unkeyed",
+        "fingerprint_cross_version_stable": False,
+        "queries": [
+            {
+                "fingerprint": "pgss:same-looking-id-hash",
+                "calls": 100,
+                "mean_ms": 20,
+            }
+        ],
+    }
+    coverage = {
+        "bind_value_diversity_pct": 100,
+        "write_workload_covered": True,
+        "peak_concurrency_covered": True,
+        "background_jobs_covered": True,
+        "replay_failure_pct": 0,
+        "environment_match_pct": 100,
+    }
+
+    payload = build_assessment_payload(
+        baseline,
+        candidate,
+        coverage=coverage,
+    )
+    result = assess(payload)
+
+    assert result.evidence_strength != "HIGH"
+    assert any(
+        "Cross-version fingerprint stability" in item
+        for item in result.known_unknowns
     )
