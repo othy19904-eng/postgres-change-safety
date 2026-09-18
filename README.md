@@ -164,7 +164,7 @@ The capture path is also privacy-first:
 - set `PGCHANGE_FINGERPRINT_KEY` to use HMAC-SHA256 with the same secret on both environments,
 - `--raw-queryid` exists only as an explicit compatibility/debug opt-in.
 
-The capture session also tries to set `pg_stat_statements.track = 'none'` so its own inspection queries do not contaminate the next workload window. If PostgreSQL permissions prevent that, the window is marked uncertain instead of silently treating it as clean.
+The capture session now tries to start the PostgreSQL connection with `pg_stat_statements.track = 'none'` already applied, so even the command that disables tracking cannot contaminate the workload window. If PostgreSQL permissions prevent startup-level disabling, the capture falls back but marks the window uncertain instead of silently treating it as clean.
 
 A cumulative `pg_stat_statements_live` or CSV snapshot can still be inspected, but v0.8 will not let that alone become HIGH evidence. HIGH evidence requires comparable verified windows or an explicit higher-quality measurement source.
 
