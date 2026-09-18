@@ -86,8 +86,16 @@ def explain(conn, sql: str) -> list[dict]:
         return cur.fetchone()[0]
 
 
-def root_node(plan: list[dict]) -> str:
-    return str(plan[0]["Plan"]["Node Type"])
+def plan_nodes(plan: list[dict]) -> list[str]:
+    names: list[str] = []
+
+    def visit(node: dict) -> None:
+        names.append(str(node.get("Node Type", "")))
+        for child in node.get("Plans", []) or []:
+            visit(child)
+
+    visit(plan[0]["Plan"])
+    return names
 
 
 def snapshot(mean_ms: float = 10.0) -> dict:
@@ -137,34 +145,22 @@ def main() -> None:
         set_seq_plan(conn)
         candidate_large = explain(conn, QUERY_LARGE)
 
-    if "Index" not in root_node(baseline_small):
+    for label, plan in (
+        ("baseline small", baseline_small),
+        ("baseline large", baseline_large),
+        ("candidate small", candidate_small),
+    ):
+        nodes = plan_nodes(plan)
+        if not any("Index" in node for node in nodes):
+            raise RuntimeError(
+                f"{label} plan was not index-based: {nodes}"
+            )
+
+    candidate_nodes = plan_nodes(candidate_large)
+    if "Seq Scan" not in candidate_nodes:
         raise RuntimeError(
-            f"baseline small plan was not index-based: "
-            f"{root_node(baseline_small)}"
-        )
-    if "Index" not in root_node(baseline_large):
-        raise RuntimeError(
-            f"baseline large plan was not index-based: "
-            f"{root_node(baseline_large)}"
-        )
-    if "Index" not in root_node(candidate_small):
-        raise RuntimeError(
-            f"candidate small plan was not index-based: "
-            f"{root_node(candidate_small)}"
-        )
-    if root_node(candidate_large) != "Aggregate":
-        # count(payload) normally has Aggregate as root; inspect child below.
-        raise RuntimeError(
-            f"unexpected candidate root: "
-            f"{root_node(candidate_large)}"
-        )
-    candidate_child = str(
-        candidate_large[0]["Plan"]["Plans"][0]["Node Type"]
-    )
-    if candidate_child != "Seq Scan":
-        raise RuntimeError(
-            f"candidate large plan was not sequential: "
-            f"{candidate_child}"
+            "candidate large plan was not sequential: "
+            f"{candidate_nodes}"
         )
 
     baseline = attach_plan_samples(
