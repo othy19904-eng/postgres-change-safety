@@ -1,15 +1,102 @@
 # PostgreSQL Change Safety
 
 [![CI](https://github.com/othy19904-eng/postgres-change-safety/actions/workflows/test.yml/badge.svg)](https://github.com/othy19904-eng/postgres-change-safety/actions/workflows/test.yml)
+[![Release](https://img.shields.io/badge/release-v0.10.0-blue)](https://github.com/othy19904-eng/postgres-change-safety/releases/tag/v0.10.0)
 
-**Experimental / RETEST.** This tool reports evidence and unknowns. It is not a production certification authority.
+**Detect PostgreSQL change regressions, show the evidence behind the suspected cause, and make missing coverage explicit.**
 
-PostgreSQL Change Safety is being developed around two questions that ordinary before/after benchmarks often leave unresolved:
+PostgreSQL Change Safety is an experimental evidence layer for major upgrades and other PostgreSQL changes. It combines comparable `pg_stat_statements` windows, stable cross-version SQL fingerprints, controlled causal experiments, plan-variant evidence, and explicit unknowns.
 
-1. **What probably caused this regression?**
-2. **How much of the production decision did we actually test — and what is still unknown?**
+It is **not** a production certification authority and does not make a GO/NO-GO decision for you.
 
-## v0.3: causal isolation with confounder blocking
+## 60-second demo — no PostgreSQL required
+
+Install the tagged release directly from GitHub:
+
+```bash
+python -m pip install "postgres-change-safety @ git+https://github.com/othy19904-eng/postgres-change-safety.git@v0.10.0"
+pgchangesafe demo
+```
+
+The demo is synthetic and clearly labeled as such. It shows the reporting contract in one command: a regression, its workload share, repeated causal evidence, a dominant plan change, plan-distribution shift, and parameter-sensitivity coverage.
+
+Expected shape:
+
+```text
+Synthetic demonstration — not production evidence.
+
+PostgreSQL Change Safety Assessment
+Evidence strength: HIGH
+Regressions detected: 1
+... cause=schema.orders_customer_idx ...
+... plan=VARIANT_SHIFT ...
+
+Plan variant analysis:
+... dominant_changed=True ...
+... parameter_sensitivity=COVERED
+```
+
+## 5-minute real PostgreSQL path
+
+Prerequisite: `pg_stat_statements` must be available on the PostgreSQL environments you want to compare.
+
+Install the PostgreSQL connector:
+
+```bash
+python -m pip install "postgres-change-safety[postgres] @ git+https://github.com/othy19904-eng/postgres-change-safety.git@v0.10.0"
+```
+
+Use the same private fingerprint key on baseline and candidate so the same SQL shape can be matched without persisting raw SQL:
+
+```bash
+export PGCHANGE_FINGERPRINT_KEY='use-a-private-random-secret'
+export PGCHANGE_DSN='postgresql://user:password@baseline-host/dbname'
+
+pgchangesafe capture --output baseline-start.json --label baseline-start
+# Run the representative baseline workload window.
+pgchangesafe capture --output baseline-end.json --label baseline-end
+
+pgchangesafe window baseline-start.json baseline-end.json \
+  --output baseline-window.json --label baseline
+```
+
+Repeat on the candidate environment:
+
+```bash
+export PGCHANGE_DSN='postgresql://user:password@candidate-host/dbname'
+
+pgchangesafe capture --output candidate-start.json --label candidate-start
+# Run the comparable candidate workload window.
+pgchangesafe capture --output candidate-end.json --label candidate-end
+
+pgchangesafe window candidate-start.json candidate-end.json \
+  --output candidate-window.json --label candidate
+
+pgchangesafe compare baseline-window.json candidate-window.json
+```
+
+Query text is read transiently to derive the stable normalized-SQL fingerprint but is **not persisted by default**.
+
+## What the report is trying to answer
+
+- Which important query fingerprints regressed, by how much, and what workload share do they represent?
+- Did PostgreSQL version, configuration, schema, or another tested factor actually reproduce the slowdown?
+- Did the dominant execution plan or plan-variant distribution change?
+- Was parameter diversity represented strongly enough to trust the plan evidence?
+- How much observed workload overlapped between baseline and candidate?
+- Which confounders and coverage gaps are still unresolved?
+
+When the evidence is insufficient, the intended output is `UNKNOWN`, not a causal story invented from correlation.
+
+## Current validation
+
+The repository CI currently exercises Python 3.10/3.12/3.13 plus real PostgreSQL 14 and 17 containers. It includes blind planted regressions, repeated-run stability checks, multi-query workload coverage attacks, real `pg_stat_statements` measurement windows, cross-version normalized-SQL fingerprint matching, and real plan-variant tests.
+
+These controlled tests are evidence that the implementation behaves as designed under the covered scenarios. They are not proof that every production workload or upgrade is safe.
+
+## Development history
+
+### v0.3: causal isolation with confounder blocking
 
 v0.3 makes causal attribution deliberately harder.
 
@@ -39,7 +126,7 @@ PROBABLE_CAUSE or UNKNOWN
 decision coverage + known unknowns
 ```
 
-## v0.4: blind planted-regression benchmark
+### v0.4: blind planted-regression benchmark
 
 v0.4 adds an evaluation layer that is separate from the engine.
 
@@ -65,7 +152,7 @@ The suite currently includes planted cases for clean version regressions, clean 
 
 This is still a **synthetic blind benchmark**, not proof that the engine is production-safe on real PostgreSQL workloads. Its purpose is to catch logic errors and overconfident attribution before moving to a real database-backed benchmark.
 
-## v0.5: real PostgreSQL blind benchmark
+### v0.5: real PostgreSQL blind benchmark
 
 v0.5 adds a database-backed benchmark in CI using real **PostgreSQL 14 and PostgreSQL 17** service containers.
 
@@ -81,7 +168,7 @@ CI fails if the planted slowdown is too weak, if regression detection is wrong, 
 
 This is materially stronger than the synthetic suite because the timings come from real PostgreSQL execution. The first attempted planted factor (`work_mem`) was rejected after CI showed that the low-memory run was actually faster on that workload; the benchmark was changed rather than forcing the expected result. It is still not proof of production safety: the workload is deterministic and intentionally small, and we do **not** yet claim a real version-only PostgreSQL regression.
 
-## v0.6: multi-mechanism stability gate
+### v0.6: multi-mechanism stability gate
 
 v0.6 makes the real PostgreSQL benchmark harder in two ways.
 
@@ -105,7 +192,7 @@ The CI workflow also avoids duplicate branch-push runs: feature branches are tes
 
 This is a stability gate, not a production-safety claim. The workloads are still controlled and intentionally small; real customer traces and broader failure mechanisms remain future validation work.
 
-## v0.7: workload-level safety gate
+### v0.7: workload-level safety gate
 
 v0.7 moves the benchmark from isolated query cases to a **multi-query workload** and adds an explicit defense against false clearance.
 
@@ -136,7 +223,7 @@ The new workload suite runs in **three fresh PostgreSQL 17 CI trials** in additi
 
 The timing measurements are real PostgreSQL execution. Some non-timing coverage fields in the benchmark are intentionally scenario inputs used to test decision-coverage logic; they are not claims that the harness itself reproduced production concurrency, bind distributions, or background jobs.
 
-## v0.8: real pg_stat_statements measurement windows
+### v0.8: real pg_stat_statements measurement windows
 
 v0.8 makes the real-workload path stricter. A raw `pg_stat_statements` snapshot is cumulative, so two captures can look comparable even when they represent very different observation periods. v0.8 therefore adds explicit **measurement windows**:
 
@@ -172,7 +259,7 @@ CI now includes a real PostgreSQL 17 instance started with `shared_preload_libra
 
 This is still not production certification. A valid measurement window proves that the sampled counters are temporally comparable; it does not prove peak concurrency, bind diversity, writes, background jobs, or complete workload coverage.
 
-## v0.9: stable cross-version workload fingerprints
+### v0.9: stable cross-version workload fingerprints
 
 v0.9 removes a major ambiguity in PostgreSQL major-upgrade comparisons. PostgreSQL `queryid` is useful inside one server/version, but it is not treated here as a guaranteed stable identity across major versions.
 
@@ -209,7 +296,7 @@ CI now starts real PostgreSQL 14 and PostgreSQL 17 instances with `pg_stat_state
 
 If a 14→17 comparison uses legacy `queryid`-based fingerprints, the system now records an explicit cross-version fingerprint unknown and prevents that comparison from becoming clean HIGH evidence.
 
-## v0.10: plan variants and parameter sensitivity
+### v0.10: plan variants and parameter sensitivity
 
 v0.10 adds a second identity layer above the stable SQL fingerprint:
 

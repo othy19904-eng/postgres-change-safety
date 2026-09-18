@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .benchmark import render_benchmark, run_blind_benchmark, strict_pass
+from .demo import build_demo_assessment
 from .engine import assess
 from .plan import attach_plan_samples
 from .snapshot import (
@@ -140,6 +141,16 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    demo_cmd = sub.add_parser(
+        "demo",
+        help="Run a self-contained synthetic demonstration with no database required",
+    )
+    demo_cmd.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+    )
+
     assess_cmd = sub.add_parser(
         "assess",
         help="Assess a complete JSON comparison payload",
@@ -248,6 +259,16 @@ def main() -> None:
     benchmark_cmd.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
+
+    if args.command == "demo":
+        result = build_demo_assessment()
+        if args.format == "json":
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("Synthetic demonstration — not production evidence.")
+            print()
+            print(_render_text(result))
+        return
 
     if args.command == "assess":
         payload = _load_json(args.input)
