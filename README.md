@@ -209,6 +209,66 @@ CI now starts real PostgreSQL 14 and PostgreSQL 17 instances with `pg_stat_state
 
 If a 14→17 comparison uses legacy `queryid`-based fingerprints, the system now records an explicit cross-version fingerprint unknown and prevents that comparison from becoming clean HIGH evidence.
 
+## v0.10: plan variants and parameter sensitivity
+
+v0.10 adds a second identity layer above the stable SQL fingerprint:
+
+```
+same SQL fingerprint
+        ↓
+structural EXPLAIN plan fingerprints
+        ↓
+variant distribution
+        ↓
+parameter-bucket coverage
+        ↓
+STABLE / VARIANT_SHIFT / UNKNOWN
+```
+
+A plan fingerprint keeps structural fields such as node type, join type, relation/index identity, strategy, and child-plan shape while discarding volatile cost, row-estimate, timing, and buffer values. Raw EXPLAIN JSON is used locally to calculate the fingerprint and is **not persisted** in the enriched snapshot.
+
+Plan evidence is attached explicitly:
+
+```bash
+pgchangesafe attach-plans baseline-window.json baseline-plans.json \
+  --output baseline-with-plans.json
+
+pgchangesafe attach-plans candidate-window.json candidate-plans.json \
+  --output candidate-with-plans.json
+
+pgchangesafe compare baseline-with-plans.json candidate-with-plans.json
+```
+
+The plan-sample file is intentionally separate from `pg_stat_statements` because PostgreSQL does not store execution plans there. A sample looks like:
+
+```json
+{
+  "samples": [
+    {
+      "query_fingerprint": "pgss:...",
+      "plan": [{"Plan": {"Node Type": "Index Scan"}}],
+      "sample_count": 5,
+      "parameter_bucket": "narrow"
+    }
+  ]
+}
+```
+
+The `parameter_bucket` field should identify a non-sensitive class of bind/input values, not the raw value itself. For plan sensitivity to count as covered, both baseline and candidate currently require at least two buckets covering at least 80% of their plan samples. Otherwise the system reports parameter sensitivity as `UNKNOWN` and caps evidence instead of assuming that one observed plan represents every bind pattern.
+
+v0.10 reports:
+
+- baseline and candidate plan-variant counts,
+- newly appearing and disappearing plan fingerprints,
+- dominant-plan switches,
+- plan-distribution shift percentage,
+- parameter-sensitivity coverage,
+- per-regression plan status in the normal assessment.
+
+CI includes a real PostgreSQL 17 controlled test. It uses the same normalized SQL shape across two parameter buckets, plants an index-plan → sequential-plan variant shift, verifies a dominant-plan change and a large distribution shift, then repeats the assessment without bucket labels and requires evidence to fall from clean HIGH confidence.
+
+The CI plant is deliberately controlled; it proves the plan-variant accounting and UNKNOWN behavior, not that all real PostgreSQL parameter-sensitive plans have been modeled.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:

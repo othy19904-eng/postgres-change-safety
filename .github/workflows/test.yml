@@ -191,3 +191,32 @@ jobs:
       - name: Stop PostgreSQL
         if: always()
         run: docker rm -f pgss14x pgss17x || true
+
+
+  real-plan-variants:
+    runs-on: ubuntu-latest
+    services:
+      pg17plans:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: benchmark
+        ports:
+          - 5423:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d benchmark"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[postgres]"
+      - name: Verify real plan variants and parameter buckets
+        run: |
+          python benchmarks/real_pg/verify_plan_variants.py \
+            --dsn "postgresql://postgres:postgres@127.0.0.1:5423/benchmark" \
+            --output /tmp/plan-variant-report.json

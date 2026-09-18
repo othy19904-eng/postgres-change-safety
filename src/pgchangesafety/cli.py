@@ -8,6 +8,7 @@ from typing import Any
 
 from .benchmark import render_benchmark, run_blind_benchmark, strict_pass
 from .engine import assess
+from .plan import attach_plan_samples
 from .snapshot import (
     build_assessment_payload,
     capture_live,
@@ -71,13 +72,32 @@ def _render_text(result: dict[str, Any]) -> str:
                 f"{r['candidate_ms']}ms ({r['ratio']}x), "
                 f"workload={r['workload_share_pct']}%, severity={r['severity']}, "
                 f"cause={cause}, confidence={r['cause_confidence']}, "
-                f"trials={r['supporting_trials']}"
+                f"trials={r['supporting_trials']}, "
+                f"plan={r.get('plan_variant_status', 'NOT_EVALUATED')}"
             )
             if r.get("unresolved_confounders"):
                 lines.append(
                     "  unresolved confounders: "
                     + ", ".join(r["unresolved_confounders"])
                 )
+
+    lines.append("")
+    lines.append("Plan variant analysis:")
+    plan_diffs = result.get("plan_variant_diffs", [])
+    if plan_diffs:
+        for item in plan_diffs:
+            lines.append(
+                f"- {item['fingerprint']}: "
+                f"status={item['status']}, "
+                f"variants={item['baseline_variant_count']} -> "
+                f"{item['candidate_variant_count']}, "
+                f"dominant_changed={item['dominant_plan_changed']}, "
+                f"distribution_shift={item['distribution_shift_pct']}%, "
+                f"parameter_sensitivity="
+                f"{item['parameter_sensitivity_status']}"
+            )
+    else:
+        lines.append("- not evaluated")
 
     lines.append("")
     lines.append("Known unknowns:")
@@ -187,6 +207,17 @@ def main() -> None:
     window_cmd.add_argument("--output", type=Path, required=True)
     window_cmd.add_argument("--label", default="window")
 
+    attach_plans_cmd = sub.add_parser(
+        "attach-plans",
+        help=(
+            "Attach structural EXPLAIN plan samples to a snapshot "
+            "without persisting raw plan JSON"
+        ),
+    )
+    attach_plans_cmd.add_argument("snapshot", type=Path)
+    attach_plans_cmd.add_argument("plans", type=Path)
+    attach_plans_cmd.add_argument("--output", type=Path, required=True)
+
     compare_cmd = sub.add_parser(
         "compare",
         help="Compare two normalized snapshots and produce a conservative assessment",
@@ -263,6 +294,22 @@ def main() -> None:
             f"Wrote {len(snapshot['queries'])} windowed query fingerprints "
             f"to {args.output}; calls={snapshot['window_total_calls']}; "
             f"valid={snapshot['measurement_window_valid']}"
+        )
+        return
+
+    if args.command == "attach-plans":
+        snapshot = _load_json(args.snapshot)
+        plans = _load_json(args.plans)
+        enriched = attach_plan_samples(
+            snapshot,
+            plans,
+            key=os.getenv("PGCHANGE_FINGERPRINT_KEY"),
+        )
+        _write_json(args.output, enriched)
+        print(
+            f"Attached plan evidence for "
+            f"{enriched.get('plan_queries_with_evidence', 0)} "
+            f"query fingerprint(s) to {args.output}"
         )
         return
 
