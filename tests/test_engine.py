@@ -247,3 +247,74 @@ def test_small_effect_cannot_explain_large_regression():
 
     assert result.regressions[0].cause == "UNKNOWN"
     assert result.regressions[0].cause_status == "UNKNOWN"
+
+
+def test_replicated_cause_survives_large_runner_scale_jitter():
+    payload = base_payload()
+    payload["baseline"]["queries"][0]["p95_ms"] = 10.0
+    payload["candidate"]["queries"][0]["p95_ms"] = 1000.0
+    payload["environment_diffs"] = [
+        {
+            "factor": "config.enable_hashjoin",
+            "kind": "setting",
+            "baseline": "on",
+            "candidate": "off",
+        }
+    ]
+    payload["experiments"] = [
+        {
+            "fingerprint": "q1",
+            "factor": "config.enable_hashjoin",
+            "controlled": True,
+            "changed_ms": 900.0,
+            "restored_ms": 10.0,
+        },
+        {
+            "fingerprint": "q1",
+            "factor": "config.enable_hashjoin",
+            "controlled": True,
+            "changed_ms": 200.0,
+            "restored_ms": 20.0,
+        },
+    ]
+
+    result = assess(payload)
+
+    regression = result.regressions[0]
+    assert regression.cause == "config.enable_hashjoin"
+    assert regression.cause_status == "PROBABLE_CAUSE"
+    assert regression.supporting_trials == 2
+
+
+def test_one_strong_and_one_weak_trial_do_not_form_probable_cause():
+    payload = base_payload()
+    payload["baseline"]["queries"][0]["p95_ms"] = 10.0
+    payload["candidate"]["queries"][0]["p95_ms"] = 1000.0
+    payload["environment_diffs"] = [
+        {
+            "factor": "config.enable_hashjoin",
+            "kind": "setting",
+            "baseline": "on",
+            "candidate": "off",
+        }
+    ]
+    payload["experiments"] = [
+        {
+            "fingerprint": "q1",
+            "factor": "config.enable_hashjoin",
+            "controlled": True,
+            "changed_ms": 900.0,
+            "restored_ms": 10.0,
+        },
+        {
+            "fingerprint": "q1",
+            "factor": "config.enable_hashjoin",
+            "controlled": True,
+            "changed_ms": 15.0,
+            "restored_ms": 10.0,
+        },
+    ]
+
+    result = assess(payload)
+
+    assert result.regressions[0].cause == "UNKNOWN"
