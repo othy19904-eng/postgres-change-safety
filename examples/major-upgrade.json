@@ -1,0 +1,47 @@
+{
+  "baseline": {
+    "postgres_version": "14.20",
+    "queries": [
+      {"fingerprint": "checkout_by_customer", "calls": 1800, "p95_ms": 18.0},
+      {"fingerprint": "recent_orders", "calls": 900, "p95_ms": 12.0},
+      {"fingerprint": "inventory_lookup", "calls": 4200, "p95_ms": 6.5}
+    ]
+  },
+  "candidate": {
+    "postgres_version": "17.6",
+    "queries": [
+      {"fingerprint": "checkout_by_customer", "calls": 1800, "p95_ms": 34.0},
+      {"fingerprint": "recent_orders", "calls": 900, "p95_ms": 12.8},
+      {"fingerprint": "inventory_lookup", "calls": 4200, "p95_ms": 7.0}
+    ]
+  },
+  "coverage": {
+    "workload_volume_pct": 93,
+    "bind_value_diversity_pct": 76,
+    "write_workload_covered": true,
+    "peak_concurrency_covered": false,
+    "background_jobs_covered": true,
+    "replay_failure_pct": 1.5,
+    "environment_match_pct": 96
+  },
+  "experiments": [
+    {
+      "fingerprint": "checkout_by_customer",
+      "factor": "config.random_page_cost",
+      "controlled": true,
+      "changed_ms": 33.0,
+      "restored_ms": 18.6
+    },
+    {
+      "fingerprint": "checkout_by_customer",
+      "factor": "hardware.instance_class",
+      "controlled": true,
+      "changed_ms": 23.0,
+      "restored_ms": 21.5
+    }
+  ],
+  "thresholds": {
+    "regression_ratio": 1.25,
+    "min_delta_ms": 5.0
+  }
+}
