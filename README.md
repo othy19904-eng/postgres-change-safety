@@ -65,6 +65,22 @@ The suite currently includes planted cases for clean version regressions, clean 
 
 This is still a **synthetic blind benchmark**, not proof that the engine is production-safe on real PostgreSQL workloads. Its purpose is to catch logic errors and overconfident attribution before moving to a real database-backed benchmark.
 
+## v0.5: real PostgreSQL blind benchmark
+
+v0.5 adds a database-backed benchmark in CI using real **PostgreSQL 14 and PostgreSQL 17** service containers.
+
+The benchmark creates deterministic join tables on both servers and measures server-side execution time with `EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF)`. It then generates a blind suite dynamically.
+
+The first real suite contains three cases:
+
+1. **Real config regression** — PostgreSQL 17 with hash joins enabled versus disabled on a large equality join with no supporting indexes. Repeated controlled restore/reapply trials must support `config.enable_hashjoin` before attribution.
+2. **Version + config confounder** — PostgreSQL 14/hash join enabled versus PostgreSQL 17/hash join disabled. The config factor is tested, but the version factor is not independently isolated, so the expected causal result is `UNKNOWN`.
+3. **Stable control** — the same PostgreSQL 17 configuration measured twice; the engine must not invent a regression.
+
+CI fails if the planted slowdown is too weak, if regression detection is wrong, if a provable config cause is missed, or if the engine makes a causal claim in the version-confounded case.
+
+This is materially stronger than the synthetic suite because the timings come from real PostgreSQL execution. The first attempted planted factor (`work_mem`) was rejected after CI showed that the low-memory run was actually faster on that workload; the benchmark was changed rather than forcing the expected result. It is still not proof of production safety: the workload is deterministic and intentionally small, and we do **not** yet claim a real version-only PostgreSQL regression.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
