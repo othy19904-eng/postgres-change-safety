@@ -227,6 +227,19 @@ def capture_live(
         autocommit=True,
     ) as conn:
         with conn.cursor() as cur:
+            self_tracking_disabled = False
+            try:
+                cur.execute(
+                    "SET pg_stat_statements.track = 'none'"
+                )
+                self_tracking_disabled = True
+            except Exception:
+                # Reading the view can otherwise add capture-tool queries
+                # to the next cumulative snapshot. Limited roles may not be
+                # allowed to change this setting, so preserve that fact as
+                # window uncertainty rather than failing the capture.
+                self_tracking_disabled = False
+
             cur.execute("SHOW server_version")
             version = str(cur.fetchone()[0])
 
@@ -279,6 +292,9 @@ def capture_live(
         "postgres_version": version,
         "source": "pg_stat_statements_live",
         "stats_reset": stats_reset,
+        "capture_self_tracking_disabled": (
+            self_tracking_disabled
+        ),
         **_fingerprint_metadata(
             fingerprint_key,
             raw_queryid=raw_queryid,
@@ -329,6 +345,16 @@ def derive_window_snapshot(
         unknowns.append(
             "pg_stat_statements reset marker was unavailable "
             "for this measurement window"
+        )
+
+    self_tracking_clean = (
+        start.get("capture_self_tracking_disabled") is True
+        and end.get("capture_self_tracking_disabled") is True
+    )
+    if not self_tracking_clean:
+        unknowns.append(
+            "Capture-session queries may be present because "
+            "self-tracking could not be disabled"
         )
 
     disappeared = sorted(
@@ -417,6 +443,7 @@ def derive_window_snapshot(
         and counter_regressions == 0
         and start_reset is not None
         and end_reset is not None
+        and self_tracking_clean
     )
 
     return {
