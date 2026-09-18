@@ -107,3 +107,38 @@ jobs:
             --output /tmp/real-postgres-workload.json
       - name: Workload-level false-clearance benchmark
         run: pgchangesafe benchmark /tmp/real-postgres-workload.json --strict
+
+
+  real-pgss-window:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[postgres]"
+      - name: Start PostgreSQL with pg_stat_statements
+        run: |
+          docker run -d --name pgss17 \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=benchmark \
+            -p 5420:5432 \
+            postgres:17 \
+            -c shared_preload_libraries=pg_stat_statements
+          for i in {1..30}; do
+            if docker exec pgss17 pg_isready -U postgres -d benchmark; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs pgss17
+          exit 1
+      - name: Verify real pg_stat_statements window evidence
+        run: |
+          python benchmarks/real_pg/verify_pgss_window.py \
+            --dsn "postgresql://postgres:postgres@127.0.0.1:5420/benchmark" \
+            --output /tmp/pgss-window-report.json
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker rm -f pgss17 || true
