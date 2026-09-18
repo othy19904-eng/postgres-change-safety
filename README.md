@@ -65,6 +65,22 @@ The suite currently includes planted cases for clean version regressions, clean 
 
 This is still a **synthetic blind benchmark**, not proof that the engine is production-safe on real PostgreSQL workloads. Its purpose is to catch logic errors and overconfident attribution before moving to a real database-backed benchmark.
 
+## v0.5: real PostgreSQL blind benchmark
+
+v0.5 adds a database-backed benchmark in CI using real **PostgreSQL 14 and PostgreSQL 17** service containers.
+
+The benchmark creates the same deterministic table on both servers and measures server-side execution time with `EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF)`. It then generates a blind suite dynamically.
+
+The first real suite contains three cases:
+
+1. **Real config regression** — PostgreSQL 17 with `work_mem=128MB` versus `64kB`. Repeated controlled restore/reapply trials must support `config.work_mem` before attribution.
+2. **Version + config confounder** — PostgreSQL 14/high work_mem versus PostgreSQL 17/low work_mem. The config factor is tested, but the version factor is not independently isolated, so the expected causal result is `UNKNOWN`.
+3. **Stable control** — the same PostgreSQL 17 configuration measured twice; the engine must not invent a regression.
+
+CI fails if the planted slowdown is too weak, if regression detection is wrong, if a provable config cause is missed, or if the engine makes a causal claim in the version-confounded case.
+
+This is materially stronger than the synthetic suite because the timings come from real PostgreSQL execution. It is still not proof of production safety: the workload is deterministic and intentionally small, and we do **not** yet claim a real version-only PostgreSQL regression.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
