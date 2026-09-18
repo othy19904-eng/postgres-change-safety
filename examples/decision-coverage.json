@@ -1,0 +1,8 @@
+{
+  "bind_value_diversity_pct": 82,
+  "write_workload_covered": true,
+  "peak_concurrency_covered": false,
+  "background_jobs_covered": true,
+  "replay_failure_pct": 1.2,
+  "environment_match_pct": 96
+}

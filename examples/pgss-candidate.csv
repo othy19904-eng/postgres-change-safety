@@ -1,0 +1,4 @@
+queryid,calls,total_exec_time,mean_exec_time,rows
+101,1000,20000,20,5000
+202,400,3400,8.5,1200
+303,100,520,5.2,100
