@@ -20,6 +20,10 @@ class Regression:
     cause_status: str
     supporting_trials: int
     unresolved_confounders: list[str]
+    plan_variant_status: str
+    dominant_plan_changed: bool | None
+    plan_distribution_shift_pct: float | None
+    parameter_sensitivity_status: str
 
 
 @dataclass
@@ -33,6 +37,8 @@ class Assessment:
     evidence_score: float
     causal_resolution_rate: float
     observed_workload_overlap_pct: float | None
+    plan_variant_diffs: list[dict[str, Any]]
+    plan_variant_shift_rate: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +51,8 @@ class Assessment:
             "evidence_score": self.evidence_score,
             "causal_resolution_rate": self.causal_resolution_rate,
             "observed_workload_overlap_pct": self.observed_workload_overlap_pct,
+            "plan_variant_diffs": self.plan_variant_diffs,
+            "plan_variant_shift_rate": self.plan_variant_shift_rate,
         }
 
 
@@ -365,6 +373,12 @@ def assess(payload: dict[str, Any]) -> Assessment:
     candidate = _query_map(candidate_snapshot)
     experiments = payload.get("experiments", [])
     environment_diffs = payload.get("environment_diffs", [])
+    plan_variant_diffs = payload.get("plan_variant_diffs", [])
+    plan_diff_by_fingerprint = {
+        str(item.get("fingerprint")): item
+        for item in plan_variant_diffs
+        if item.get("fingerprint")
+    }
     thresholds = payload.get("thresholds", {})
     ratio_threshold = float(thresholds.get("regression_ratio", 1.25))
     min_delta_ms = float(thresholds.get("min_delta_ms", 5.0))
@@ -397,6 +411,11 @@ def assess(payload: dict[str, Any]) -> Assessment:
             environment_diffs,
         )
 
+        plan_diff = plan_diff_by_fingerprint.get(
+            fingerprint,
+            {},
+        )
+
         regressions.append(
             Regression(
                 fingerprint=fingerprint,
@@ -411,6 +430,35 @@ def assess(payload: dict[str, Any]) -> Assessment:
                 cause_status=status,
                 supporting_trials=trials,
                 unresolved_confounders=unresolved,
+                plan_variant_status=str(
+                    plan_diff.get(
+                        "status",
+                        "NOT_EVALUATED",
+                    )
+                ),
+                dominant_plan_changed=(
+                    plan_diff.get(
+                        "dominant_plan_changed"
+                    )
+                ),
+                plan_distribution_shift_pct=(
+                    float(
+                        plan_diff[
+                            "distribution_shift_pct"
+                        ]
+                    )
+                    if plan_diff.get(
+                        "distribution_shift_pct"
+                    )
+                    is not None
+                    else None
+                ),
+                parameter_sensitivity_status=str(
+                    plan_diff.get(
+                        "parameter_sensitivity_status",
+                        "NOT_EVALUATED",
+                    )
+                ),
             )
         )
 
@@ -475,6 +523,27 @@ def assess(payload: dict[str, Any]) -> Assessment:
         reverse=True,
     )
 
+    evaluated_plan_diffs = [
+        item
+        for item in plan_variant_diffs
+        if item.get("status") in {
+            "VARIANT_SHIFT",
+            "STABLE",
+        }
+    ]
+    if evaluated_plan_diffs:
+        plan_shift_rate = (
+            sum(
+                1
+                for item in evaluated_plan_diffs
+                if item.get("status")
+                == "VARIANT_SHIFT"
+            )
+            / len(evaluated_plan_diffs)
+        )
+    else:
+        plan_shift_rate = 0.0
+
     return Assessment(
         regressions=regressions,
         decision_coverage_score=coverage_score,
@@ -485,4 +554,9 @@ def assess(payload: dict[str, Any]) -> Assessment:
         evidence_score=round(evidence_score, 1),
         causal_resolution_rate=round(causal_rate, 3),
         observed_workload_overlap_pct=observed_overlap,
+        plan_variant_diffs=plan_variant_diffs,
+        plan_variant_shift_rate=round(
+            plan_shift_rate,
+            3,
+        ),
     )
