@@ -125,9 +125,12 @@ def _trial_support(
     )
     restore_similarity = 1.0 - min(restore_error, 1.0)
 
+    # The paired changed/restored effect already verifies recovery. Absolute
+    # restored latency is kept as a small corroborating signal only, because
+    # shared runners can change global speed between measurement windows.
     support = (
-        0.75 * effect_match
-        + 0.25 * restore_similarity
+        0.90 * effect_match
+        + 0.10 * restore_similarity
     )
     if trial_effect < 1.15:
         support *= 0.35
@@ -163,6 +166,7 @@ def _group_experiments(
     for bucket in grouped.values():
         supports = bucket["supports"]
         bucket["score"] = mean(supports)
+        bucket["min_support"] = min(supports)
         bucket["spread"] = max(supports) - min(supports) if len(supports) > 1 else 0.0
         bucket["repeated"] = (
             len(supports) >= 2 or int(bucket["effective_trials"]) >= 3
@@ -215,13 +219,13 @@ def _causal_attribution(
     )
     trials = int(top_data.get("effective_trials", 0))
     repeated = bool(top_data.get("repeated", False))
-    stable = float(top_data.get("spread", 1.0)) <= 0.18
+    min_support = float(top_data.get("min_support", 0.0))
+    replicated_support = repeated and min_support >= 0.60
 
     unresolved_other = [factor for factor in unresolved if factor != top_factor]
 
     if (
-        repeated
-        and stable
+        replicated_support
         and top_score >= 0.80
         and (top_score - second_score) >= 0.12
         and not unresolved_other
