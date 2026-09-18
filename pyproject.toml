@@ -10,12 +10,25 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "PostgreSQL Change Safety contributors"}]
-keywords = ["postgresql", "regression", "database", "upgrade", "verification"]
+keywords = [
+  "postgresql",
+  "pg_stat_statements",
+  "performance-regression",
+  "major-upgrade",
+  "query-plan",
+  "verification",
+]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://github.com/othy19904-eng/postgres-change-safety"
+Repository = "https://github.com/othy19904-eng/postgres-change-safety"
+Issues = "https://github.com/othy19904-eng/postgres-change-safety/issues"
+Changelog = "https://github.com/othy19904-eng/postgres-change-safety/releases"
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.2"]
