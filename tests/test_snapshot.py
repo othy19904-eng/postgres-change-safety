@@ -156,6 +156,7 @@ def test_window_derives_only_counter_deltas():
         "postgres_version": "17.6",
         "source": "pg_stat_statements_live",
         "stats_reset": "2026-09-18T07:00:00+00:00",
+        "capture_self_tracking_disabled": True,
         "fingerprint_scheme": "sha256-queryid-v1",
         "fingerprint_key_id": "unkeyed",
         "settings": {"work_mem": "4096"},
@@ -174,6 +175,7 @@ def test_window_derives_only_counter_deltas():
         "postgres_version": "17.6",
         "source": "pg_stat_statements_live",
         "stats_reset": "2026-09-18T07:00:00+00:00",
+        "capture_self_tracking_disabled": True,
         "fingerprint_scheme": "sha256-queryid-v1",
         "fingerprint_key_id": "unkeyed",
         "settings": {"work_mem": "4096"},
@@ -216,6 +218,7 @@ def test_window_derives_only_counter_deltas():
 def test_window_rejects_pgss_reset():
     start = {
         "stats_reset": "2026-09-18T07:00:00+00:00",
+        "capture_self_tracking_disabled": True,
         "fingerprint_scheme": "sha256-queryid-v1",
         "fingerprint_key_id": "unkeyed",
         "queries": [],
@@ -303,4 +306,32 @@ def test_cumulative_pgss_snapshots_cannot_reach_high_evidence():
     assert any(
         "measurement windows are not verified" in item
         for item in result.known_unknowns
+    )
+
+
+
+def test_window_marks_capture_self_tracking_as_unknown():
+    start = {
+        "captured_at": "2026-09-18T08:00:00+00:00",
+        "stats_reset": "2026-09-18T07:00:00+00:00",
+        "capture_self_tracking_disabled": False,
+        "fingerprint_scheme": "sha256-queryid-v1",
+        "fingerprint_key_id": "unkeyed",
+        "queries": [],
+    }
+    end = {
+        "captured_at": "2026-09-18T08:05:00+00:00",
+        "stats_reset": "2026-09-18T07:00:00+00:00",
+        "capture_self_tracking_disabled": False,
+        "fingerprint_scheme": "sha256-queryid-v1",
+        "fingerprint_key_id": "unkeyed",
+        "queries": [],
+    }
+
+    window = derive_window_snapshot(start, end)
+
+    assert window["measurement_window_valid"] is False
+    assert any(
+        "Capture-session queries may be present" in item
+        for item in window["window_unknowns"]
     )
