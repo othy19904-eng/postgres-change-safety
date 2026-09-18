@@ -57,7 +57,7 @@ def _workload_case_result(
     unexpected = sorted(actual_fps - expected_fps)
     stable_false_positives = sorted(actual_fps & expected_stable)
 
-    cause_mismatches: list[dict[str, str]] = []
+    cause_mismatches: list[dict[str, Any]] = []
     for fingerprint, expected_cause in expected.items():
         actual = actual_by_fp.get(fingerprint)
         if actual is None:
@@ -69,6 +69,18 @@ def _workload_case_result(
                     "fingerprint": fingerprint,
                     "expected": expected_cause,
                     "actual": actual_cause,
+                    "confidence": actual.get(
+                        "cause_confidence",
+                        0.0,
+                    ),
+                    "supporting_trials": actual.get(
+                        "supporting_trials",
+                        0,
+                    ),
+                    "unresolved_confounders": actual.get(
+                        "unresolved_confounders",
+                        [],
+                    ),
                 }
             )
 
@@ -404,7 +416,11 @@ def render_benchmark(report: dict[str, Any]) -> str:
                         "  cause mismatch: "
                         f"{mismatch['fingerprint']} "
                         f"expected={mismatch['expected']} "
-                        f"actual={mismatch['actual']}"
+                        f"actual={mismatch['actual']} "
+                        f"confidence={mismatch['confidence']} "
+                        f"trials={mismatch['supporting_trials']} "
+                        f"unresolved="
+                        f"{mismatch['unresolved_confounders']}"
                     )
             continue
 
