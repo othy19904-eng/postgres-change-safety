@@ -39,6 +39,32 @@ PROBABLE_CAUSE or UNKNOWN
 decision coverage + known unknowns
 ```
 
+## v0.4: blind planted-regression benchmark
+
+v0.4 adds an evaluation layer that is separate from the engine.
+
+Each benchmark case has two parts:
+
+- `payload`: the only evidence the engine receives.
+- `oracle`: the hidden expected regression/cause used only after the engine has produced its answer.
+
+Run it with:
+
+```bash
+pgchangesafe benchmark benchmarks/blind_cases.json --strict
+```
+
+The first suite measures four things:
+
+- regression detection accuracy,
+- correct attribution when a cause is actually provable,
+- correct abstention as `UNKNOWN` when evidence is insufficient or competing,
+- false causal attribution count.
+
+The suite currently includes planted cases for clean version regressions, clean config regressions, unresolved config confounders, competing explanations, single-trial evidence, unstable repeated evidence, regressions with no causal evidence, unrelated experiments, negative controls, and non-regressions with misleading causal-looking trials.
+
+This is still a **synthetic blind benchmark**, not proof that the engine is production-safe on real PostgreSQL workloads. Its purpose is to catch logic errors and overconfident attribution before moving to a real database-backed benchmark.
+
 ## Use real pg_stat_statements evidence
 
 Export comparable baseline and candidate windows:
