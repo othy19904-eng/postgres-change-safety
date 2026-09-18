@@ -11,6 +11,7 @@ from .engine import assess
 from .snapshot import (
     build_assessment_payload,
     capture_live,
+    derive_window_snapshot,
     import_pgss_csv,
 )
 
@@ -135,6 +136,11 @@ def main() -> None:
     import_cmd.add_argument("--output", type=Path, required=True)
     import_cmd.add_argument("--label", default="snapshot")
     import_cmd.add_argument("--postgres-version")
+    import_cmd.add_argument(
+        "--raw-queryid",
+        action="store_true",
+        help="Store raw queryid fingerprints instead of pseudonymous hashes.",
+    )
 
     capture_cmd = sub.add_parser(
         "capture",
@@ -152,6 +158,23 @@ def main() -> None:
         action="store_true",
         help="Include normalized query text. Off by default for privacy.",
     )
+    capture_cmd.add_argument(
+        "--raw-queryid",
+        action="store_true",
+        help="Store raw queryid fingerprints instead of pseudonymous hashes.",
+    )
+
+    window_cmd = sub.add_parser(
+        "window",
+        help=(
+            "Derive a pg_stat_statements measurement window "
+            "from cumulative start/end captures"
+        ),
+    )
+    window_cmd.add_argument("start", type=Path)
+    window_cmd.add_argument("end", type=Path)
+    window_cmd.add_argument("--output", type=Path, required=True)
+    window_cmd.add_argument("--label", default="window")
 
     compare_cmd = sub.add_parser(
         "compare",
@@ -194,6 +217,8 @@ def main() -> None:
             args.csv,
             label=args.label,
             postgres_version=args.postgres_version,
+            fingerprint_key=os.getenv("PGCHANGE_FINGERPRINT_KEY"),
+            raw_queryid=args.raw_queryid,
         )
         _write_json(args.output, snapshot)
         print(f"Wrote {len(snapshot['queries'])} query fingerprints to {args.output}")
@@ -206,9 +231,27 @@ def main() -> None:
             args.dsn,
             label=args.label,
             include_query_text=args.include_query_text,
+            fingerprint_key=os.getenv("PGCHANGE_FINGERPRINT_KEY"),
+            raw_queryid=args.raw_queryid,
         )
         _write_json(args.output, snapshot)
         print(f"Wrote {len(snapshot['queries'])} query fingerprints to {args.output}")
+        return
+
+    if args.command == "window":
+        start = _load_json(args.start)
+        end = _load_json(args.end)
+        snapshot = derive_window_snapshot(
+            start,
+            end,
+            label=args.label,
+        )
+        _write_json(args.output, snapshot)
+        print(
+            f"Wrote {len(snapshot['queries'])} windowed query fingerprints "
+            f"to {args.output}; calls={snapshot['window_total_calls']}; "
+            f"valid={snapshot['measurement_window_valid']}"
+        )
         return
 
     if args.command == "compare":
