@@ -58,8 +58,9 @@ def setup(conn) -> None:
 
 
 def set_hashjoin(conn, enabled: bool) -> None:
+    value = "on" if enabled else "off"
     with conn.cursor() as cur:
-        cur.execute("SET enable_hashjoin = %s", ("on" if enabled else "off",))
+        cur.execute(f"SET enable_hashjoin = {value}")
 
 
 def server_version(conn) -> str:
