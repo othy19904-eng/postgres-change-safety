@@ -398,23 +398,34 @@ def capture_live(
         WHERE calls > 0
     """
 
-    with psycopg.connect(
-        dsn,
-        autocommit=True,
-    ) as conn:
+    startup_tracking_disabled = False
+    try:
+        conn = psycopg.connect(
+            dsn,
+            autocommit=True,
+            options="-c pg_stat_statements.track=none",
+        )
+        startup_tracking_disabled = True
+    except Exception:
+        # Some managed/limited roles cannot set the extension GUC at
+        # connection startup. Fall back so capture still works, but the
+        # resulting window remains explicitly uncertain: a later SET can
+        # itself be counted before tracking is disabled.
+        conn = psycopg.connect(
+            dsn,
+            autocommit=True,
+        )
+
+    with conn:
         with conn.cursor() as cur:
-            self_tracking_disabled = False
-            try:
-                cur.execute(
-                    "SET pg_stat_statements.track = 'none'"
-                )
-                self_tracking_disabled = True
-            except Exception:
-                # Reading the view can otherwise add capture-tool queries
-                # to the next cumulative snapshot. Limited roles may not be
-                # allowed to change this setting, so preserve that fact as
-                # window uncertainty rather than failing the capture.
-                self_tracking_disabled = False
+            self_tracking_disabled = startup_tracking_disabled
+            if not startup_tracking_disabled:
+                try:
+                    cur.execute(
+                        "SET pg_stat_statements.track = 'none'"
+                    )
+                except Exception:
+                    pass
 
             cur.execute("SHOW server_version")
             version = str(cur.fetchone()[0])
