@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from math import log, sqrt
 from statistics import mean
 from typing import Any
 
@@ -97,15 +98,38 @@ def _trial_support(
     if baseline_ms <= 0 or candidate_ms <= 0 or changed <= 0 or restored <= 0:
         return None
 
-    reproduce_error = abs(changed - candidate_ms) / max(candidate_ms, 1e-9)
-    restore_error = abs(restored - baseline_ms) / max(baseline_ms, 1e-9)
-    slowdown = changed / baseline_ms
+    expected_effect = candidate_ms / baseline_ms
+    trial_effect = changed / restored
 
-    support = 1.0 - (
-        0.55 * min(reproduce_error, 1.0)
-        + 0.45 * min(restore_error, 1.0)
+    # Compare causal effect sizes rather than demanding identical absolute
+    # timings. CI runners and real staging systems can shift in overall speed
+    # between the baseline/candidate window and a later controlled trial.
+    # A paired changed/restored ratio preserves the intervention signal.
+    if expected_effect <= 1.0 or trial_effect <= 1.0:
+        effect_match = 0.0
+    else:
+        expected_log = log(expected_effect)
+        trial_log = log(trial_effect)
+        ratio = min(expected_log, trial_log) / max(
+            expected_log,
+            trial_log,
+            1e-9,
+        )
+        # Square-root keeps materially similar large effects comparable while
+        # still penalizing a tiny effect that cannot explain a large one.
+        effect_match = sqrt(max(0.0, min(ratio, 1.0)))
+
+    restore_error = abs(restored - baseline_ms) / max(
+        baseline_ms,
+        1e-9,
     )
-    if slowdown < 1.15:
+    restore_similarity = 1.0 - min(restore_error, 1.0)
+
+    support = (
+        0.75 * effect_match
+        + 0.25 * restore_similarity
+    )
+    if trial_effect < 1.15:
         support *= 0.35
 
     return max(0.0, min(support, 1.0))
