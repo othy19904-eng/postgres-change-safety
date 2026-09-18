@@ -24,7 +24,7 @@ INDEX_QUERY = """
 EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF)
 SELECT count(payload)
 FROM bench_lookup
-WHERE k BETWEEN 123456 AND 123555
+WHERE k BETWEEN 100000 AND 109999
 """
 
 
@@ -253,10 +253,10 @@ def repeated_index_experiments(conn) -> list[dict]:
     experiments = []
     for _ in range(2):
         ensure_lookup_index(conn, False)
-        changed = median_ms(conn, INDEX_QUERY, rounds=3, warmups=0)
+        changed = median_ms(conn, INDEX_QUERY, rounds=5, warmups=0)
 
         ensure_lookup_index(conn, True)
-        restored = median_ms(conn, INDEX_QUERY, rounds=3, warmups=0)
+        restored = median_ms(conn, INDEX_QUERY, rounds=5, warmups=0)
 
         experiments.append(
             {
