@@ -19,3 +19,6 @@ jobs:
       - run: pip install -e .
       - run: pytest -q
       - run: pgchangesafe assess examples/major-upgrade.json
+      - name: Blind regression benchmark
+        if: matrix.python-version == '3.12'
+        run: pgchangesafe benchmark benchmarks/blind_cases.json --strict
